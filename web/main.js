@@ -9,27 +9,43 @@ window.addEventListener("hashchange", () => { if (S.me) route(); });
 function showLogin(message) {
   S.me = null; closeMenu(); clear($("#app")); clearInterval(S.poll);
   applyTheme(localStorage.getItem("tdms_theme") || "light");
-  const b = S.brand, dpr = window.devicePixelRatio > 1 ? 1.5 : 1;
-  const w = Math.min(1200, Math.round(innerWidth * 0.55 * dpr)), hh = Math.min(1600, Math.round(innerHeight * dpr));
-  let mode = "user";
-  const id = h("input", { class: "inp", placeholder: "name@company.com", value: localStorage.getItem("tdms_login") || "", autocomplete: "username" });
-  const pw = h("input", { class: "inp", type: "password", autocomplete: "current-password", onkeydown: e => { if (e.key === "Enter") submit(); } });
+  const b = S.brand;
+  let mode = "user", shown = false;
+  const id = h("input", { class: "inp", placeholder: "name@company.com", value: localStorage.getItem("tdms_login") || "", autocomplete: "username", spellcheck: "false" });
+  const pw = h("input", { class: "inp", type: "password", placeholder: "Enter your password", autocomplete: "current-password", onkeydown: e => { if (e.key === "Enter") submit(); } });
+  id.addEventListener("keydown", e => { if (e.key === "Enter") pw.focus(); });
+  const eye = h("button", { class: "eye", type: "button", title: "Show / hide password", tabindex: "-1", onclick: () => { shown = !shown; pw.type = shown ? "text" : "password"; clear(eye); eye.appendChild(svgIcon(shown ? "eyeoff" : "eye")); } }, svgIcon("eye"));
   const rem = h("input", { type: "checkbox", checked: !!localStorage.getItem("tdms_login") });
-  const err = h("div", { class: "err", style: { color: "#D32F2F", minHeight: "20px", marginTop: "8px" } }, message || "");
-  const btn = h("button", { class: "btn primary big", style: { width: "100%", marginTop: "10px" }, onclick: () => submit() }, "Sign in");
-  const tabs = pills([["user", "User"], ["admin", "Administrator"]], "user", v => { mode = v; });
+  const alertBox = h("div", {});
+  const say = (msg, info) => { clear(alertBox); if (msg) alertBox.appendChild(h("div", { class: "alert" + (info ? " info" : "") }, svgIcon("warn", 18), h("span", {}, msg))); };
+  say(message, true);
+  const btn = h("button", { class: "btn primary go", onclick: () => submit() }, "Sign in");
+  const seg = pills([["user", "User"], ["admin", "Administrator"]], "user", v => { mode = v; });
   async function submit() {
-    err.textContent = ""; btn.disabled = true;
+    say(""); btn.disabled = true; btn.textContent = "Signing in...";
     try {
       const r = await post("/api/login", { login: id.value.trim(), password: pw.value, mode });
       if (rem.checked) localStorage.setItem("tdms_login", id.value.trim()); else localStorage.removeItem("tdms_login");
       start(r);
-    } catch (e) { err.textContent = e.message; btn.disabled = false; pw.select(); }
+    } catch (e) { say(e.message); btn.disabled = false; btn.textContent = "Sign in"; pw.select(); }
   }
-  const links = h("div", { class: "links" }, b.allow_signup ? h("a", { onclick: createAccount }, "Create account") : h("span"), h("a", { onclick: recover }, "Forgot password?"));
-  const box = h("div", { class: "box" }, h("img", { class: "logo", src: "/brand/logo.png", alt: "", onerror: e => e.target.remove() }), h("h1", {}, b.app_name || "TDMS"), h("div", { class: "muted", style: { marginBottom: "16px" } }, b.subtitle || ""),
-    tabs, h("label", { class: "lbl" }, "Email ID"), id, h("label", { class: "lbl" }, "Password"), pw, h("label", { class: "sw" }, rem, "Remember my email ID"), err, btn, links);
-  add($("#app"), h("div", { class: "login", style: { backgroundImage: `url(/brand/bg.png?w=${Math.min(1600, Math.round(innerWidth))}&h=${Math.min(1000, Math.round(innerHeight))})` } }, h("div", { class: "hero", style: { backgroundImage: `url(/brand/hero.png?w=${w}&h=${hh})` } }), h("div", { class: "formside" }, box)));
+  const logo = src => h("img", { src, alt: "", onerror: e => e.target.parentElement.style.display = "none" });
+  const brand = h("div", { class: "brand" },
+    h("div", { class: "tile" }, logo("/brand/logo.png?" + (S.logoBust || ""))),
+    h("div", {}, h("h2", { class: "bname" }, b.app_name || "TDMS"), h("div", { class: "bsub" }, b.subtitle || ""), h("div", { class: "rule" }), h("div", { class: "btag" }, b.tagline || "")),
+    h("div", { class: "bfoot" }, "\u00A9 " + new Date().getFullYear() + "  " + (b.company || "")));
+  const form = h("div", { class: "formside" },
+    h("div", { class: "mlogo" }, logo("/brand/logo.png?" + (S.logoBust || ""))),
+    h("h1", {}, "Welcome back"), h("div", { class: "lead" }, "Sign in to your " + (b.app_name || "TDMS") + " account to continue."),
+    seg, alertBox,
+    h("label", { class: "lbl" }, "Email ID"), h("div", { class: "ifield" }, svgIcon("mail"), id),
+    h("label", { class: "lbl" }, "Password"), h("div", { class: "ifield" }, svgIcon("lock"), pw, eye),
+    h("div", { class: "rowlinks" }, h("label", {}, rem, "Remember my email ID"), h("a", { onclick: recover }, "Forgot password?")),
+    btn,
+    b.allow_signup ? h("div", { class: "newhere" }, "New here?  ", h("a", { onclick: createAccount }, "Create an account")) : null,
+    h("div", { class: "secure" }, svgIcon("shield"), "Secure sign-in  \u00B7  activity is recorded"));
+  const bg = `/brand/bg.png?w=${Math.min(1600, Math.round(innerWidth))}&h=${Math.min(1000, Math.round(innerHeight))}`;
+  add($("#app"), h("div", { class: "login", style: { backgroundImage: `url(${bg})` } }, h("div", { class: "auth" }, brand, form)));
   (id.value ? pw : id).focus();
 }
 function createAccount() {
