@@ -19,17 +19,36 @@ Works on Windows PCs, Macs, tablets and phones (Chrome, Edge, Safari, Firefox).
    - Send the team the "On your network" address. They sign in with their email ID and password
      (or use "Create account" if you allowed it; you approve them on the Users tab).
 
-3. TEAM ON ANY NETWORK (home, travelling, mobile data)  - choose ONE
-   A. Cloudflare Tunnel (easiest, free, https, no router changes)
-      1) Download cloudflared (free) and save it as cloudflared.exe in this folder.
-      2) Keep Run_Server.bat running, then double-click Start_Public_Link.bat.
-      3) It prints a link like  https://xxxx.trycloudflare.com  - share it. (It changes every time you start it.)
-      4) For a permanent link on your own domain use a "named tunnel" (cloudflared tunnel login / create / route dns).
-      5) Then open web_config.json and set  "behind_proxy": true   (so sign-in cookies and IP limits work behind the tunnel).
-   B. Tailscale (private network, free for small teams): install Tailscale on the server and on each person's device,
-      then they open  http://<server-tailscale-name>:8080  . Nothing is exposed to the internet.
-   C. Company server / cloud VM: install Python there, copy this folder, open port 8080 (or put it behind nginx/IIS with https).
-   NEVER forward port 8080 on your router straight to the internet without https.
+3. TEAM ON ANY NETWORK (home, travelling, mobile data, other offices)  - choose ONE
+   Your team then only needs the https link. No software on their computers, no VPN.
+   The server PC must be ON and Run_Server.bat must be running.
+
+   A. QUICK TRY - Cloudflare Tunnel (free, no account, 3 minutes)
+      1) Download  cloudflared-windows-amd64.exe  from Cloudflare (free), rename it  cloudflared.exe,
+         put it in this folder.
+      2) Keep Run_Server.bat running. Double-click  Start_Public_Link.bat.
+      3) It prints a link like  https://xxxx.trycloudflare.com  - send it to your team.
+      Good: very easy.  Limit: the link CHANGES every time you start it.
+
+   B. PERMANENT LINK - Tailscale Funnel (free, no domain, https, same link every day)   <- recommended
+      One-time setup (about 10 minutes):
+      1) On the server PC install Tailscale (tailscale.com/download) and sign in (Google or Microsoft account).
+      2) Open  login.tailscale.com/admin/dns  and switch ON "MagicDNS" and "HTTPS Certificates".
+      3) Keep Run_Server.bat running. Double-click  Start_Tailscale_Funnel.bat.
+         The first time it shows a web address: open it and click "Enable Funnel", then run the file again.
+      4) It prints your permanent link, for example  https://afs-pc.tail1234.ts.net  - share it with the team.
+      After this, the link keeps working whenever the server PC is on and Run_Server.bat is running.
+      Switch it off any time:  tailscale funnel reset
+
+   C. Company server / cloud VM: install Python there, copy this folder, put it behind https (IIS / nginx / Caddy).
+
+   SAFETY CHECKLIST BEFORE SHARING A PUBLIC LINK
+      - Change the admin password (the program asks you) and use a long one.
+      - Admin page > Rules: keep "New accounts must be approved" ON and set your company e-mail domain.
+      - Wrong passwords are limited per address and per account, and everything is in the Activity log.
+      - Big files: they are sent in pieces automatically, so videos of 1 GB work even through the tunnel.
+      - NEVER forward port 8080 on your router straight to the internet without https.
+      - Inside the office you can still use the plain address (section 2) - it is faster.
 
 4. KEEP IT RUNNING
    - Install_Autostart.bat starts the server when you sign in to Windows.
@@ -60,4 +79,5 @@ Works on Windows PCs, Macs, tablets and phones (Chrome, Edge, Safari, Firefox).
    - Security: passwords are stored hashed (PBKDF2); sign-in is limited after repeated mistakes; web pages cannot run
      uploaded HTML; every action is in the Activity log. Use https (tunnel) when outside your office.
    - Change the port in web_config.json ("port": 8080). Errors are written to tdms_web_error.log.
+   - Public link with Cloudflare / Tailscale: nothing to configure; the server trusts the tunnel automatically.
    - Forgot the admin password?  python tdms_web.py --reset-admin   (sets it back to admin123).

@@ -402,15 +402,44 @@ function upPanel() {
   Up.box = h("div", { class: "uploads" }, h("div", { class: "row" }, h("b", { class: "grow" }, "Uploading"), h("button", { class: "btn ghost sq", onclick: () => Up.box.remove() }, "\u2715")), Up.list);
   document.body.appendChild(Up.box);
 }
-function xhrUpload(cat, it, mode, onprog) {
+function xhrForm(url, fd, onprog) {
   return new Promise(res => {
-    const f = new FormData(); f.append("cat", cat); f.append("file", it.file, it.file.name); f.append("relpath", it.rel || ""); if (mode) f.append("mode", mode);
-    const x = new XMLHttpRequest(); x.open("POST", "/api/upload"); x.setRequestHeader("X-Requested-With", "tdms");
-    x.upload.onprogress = e => e.lengthComputable && onprog(e.loaded / e.total);
+    const x = new XMLHttpRequest(); x.open("POST", url); x.setRequestHeader("X-Requested-With", "tdms");
+    if (onprog) x.upload.onprogress = e => e.lengthComputable && onprog(e.loaded / e.total);
     x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) { /* ignore */ } res({ status: x.status, json: j }); };
     x.onerror = () => res({ status: 0, json: { error: "Network error." } });
-    x.send(f);
+    x.send(fd);
   });
+}
+const pieceMB = () => +localStorage.getItem("tdms_chunk_mb") || 40;         // big files travel in pieces (works through tunnels that limit one request to 100 MB)
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function randomId() { const a = new Uint8Array(12); (crypto.getRandomValues ? crypto.getRandomValues(a) : a.forEach((_, i) => a[i] = Math.random() * 256)); return [...a].map(b => b.toString(16).padStart(2, "0")).join(""); }
+async function sendFile(cat, it, mode, onprog, st) {
+  if (it.file.size <= pieceMB() * 1024 * 1024) {
+    const f = new FormData(); f.append("cat", cat); f.append("file", it.file, it.file.name); f.append("relpath", it.rel || ""); if (mode) f.append("mode", mode);
+    return xhrForm("/api/upload", f, onprog);
+  }
+  const piece = pieceMB() * 1024 * 1024, total = Math.ceil(it.file.size / piece); st.uid = st.uid || randomId();
+  if (!st.sent) {
+    for (let i = 0; i < total; i++) {
+      let r, tries = 0;
+      do {
+        tries++;
+        const f = new FormData(); f.append("uid", st.uid); f.append("index", i); f.append("total", total); f.append("chunk", it.file.slice(i * piece, (i + 1) * piece), "part");
+        r = await xhrForm("/api/upload/chunk", f, p => onprog((i + p) / total));
+        if (r.status === 200) break;
+        if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) return r;
+        await sleep(1500 * tries);
+      } while (tries < 4);
+      if (r.status !== 200) return { status: 0, json: { error: "The connection broke. Please upload this file again." } };
+    }
+    st.sent = true;
+  }
+  try {
+    const r = await fetch("/api/upload/finish", { method: "POST", headers: { "X-Requested-With": "tdms", "Content-Type": "application/json" }, body: JSON.stringify({ uid: st.uid, total, cat, filename: it.file.name, relpath: it.rel || "", mode: mode || "" }) });
+    let j = {}; try { j = await r.json(); } catch (e) { /* ignore */ }
+    return { status: r.status, json: j };
+  } catch (e) { return { status: 0, json: { error: "Network error." } }; }
 }
 function askConflict(name) {
   return new Promise(res => {
@@ -428,11 +457,12 @@ async function startUpload(items, cat) {
     const row = h("div", { class: "u" }, h("div", {}, (it.rel || it.file.name)), h("div", { class: "bar" }, h("i")));
     Up.list.appendChild(row);
     const bar = $("i", row), set = p => { bar.style.width = Math.round(p * 100) + "%"; };
-    let r = await xhrUpload(cat, it, null, set);
+    const st = {};
+    let r = await sendFile(cat, it, null, set, st);
     if (r.status === 409) {
       let choice = sticky; if (!choice) { choice = await askConflict(it.file.name); if (choice.all) sticky = choice; }
       if (choice.mode === "skip") { skipped++; row.firstChild.textContent += "  (skipped)"; bar.style.width = "100%"; continue; }
-      r = await xhrUpload(cat, it, choice.mode, set);
+      r = await sendFile(cat, it, choice.mode, set, st);
     }
     if (r.status === 200) { ok++; bar.style.width = "100%"; bar.style.background = "#1D8348"; }
     else { fail++; bar.style.width = "100%"; bar.style.background = "#D32F2F"; row.appendChild(h("div", { style: { color: "#D32F2F" } }, (r.json && r.json.error) || "Failed")); }

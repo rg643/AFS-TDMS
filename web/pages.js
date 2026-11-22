@@ -27,7 +27,7 @@ async function renderViewer(root, id) {
   const body = h("div", { class: "vbody" });
   const bar = h("div", { class: "vbar" }, h("h2", {}, doc.title), h("span", { class: "badge", style: { "--c": typeColor(doc.type) } }, doc.type_label), statusBadge(doc.status), h("span", { class: "spacer" }));
   const favBtn = h("button", { class: "btn", onclick: async () => { try { await post("/api/docs/fav", { ids: [id], on: !doc.fav }); doc.fav = !doc.fav; favBtn.textContent = doc.fav ? "\u2605 Favorite" : "\u2606 Favorite"; } catch (e) { toastErr(e); } } }, doc.fav ? "\u2605 Favorite" : "\u2606 Favorite");
-  add(bar, favBtn, h("button", { class: "btn", onclick: () => download(`/files/${id}/download`) }, "Download"), h("button", { class: "btn ghost", onclick: () => closeTab(id) }, "Close"));
+  add(bar, r.kind === "pdf" ? h("a", { class: "btn", href: `/files/${id}/inline`, target: "_blank", rel: "noopener" }, "Open in new tab") : "", favBtn, h("button", { class: "btn", onclick: () => download(`/files/${id}/download`) }, "Download"), h("button", { class: "btn ghost", onclick: () => closeTab(id) }, "Close"));
   const exactable = [".docx", ".xlsx", ".xlsm", ".pptx"].includes(r.ext) && S.exactOk;
   if (exactable) {
     const eb = h("button", { class: "btn navy" }, "Exact view (PDF)"); let exact = false;
@@ -207,7 +207,7 @@ async function renderAdmin(root) {
     h("div", { class: "row", style: { margin: "0 0 12px" } }, h("button", { class: "btn primary big", onclick: save }, "Save settings")),
     h("div", { class: "grid2e" },
       h("div", { class: "card" }, h("h3", {}, "Share with your team"), h("p", { class: "muted" }, "Team members open one of these addresses in their browser (same network or VPN):"), ...info.urls.map(u => h("div", {}, h("span", { class: "url" }, u))), info.urls.length ? "" : h("div", { class: "muted" }, "No network address found."),
-        h("p", { class: "muted small", style: { marginTop: "12px" } }, "From outside the office use a secure tunnel (Cloudflare Tunnel or Tailscale) - see README_WEB.txt.")),
+        h("p", { class: "muted small", style: { marginTop: "12px" } }, "From any other network (home, travelling, mobile data) start Start_Public_Link.bat or Start_Tailscale_Funnel.bat on the server and share the https link it shows - see README_WEB.txt.")),
       h("div", { class: "card" }, h("h3", {}, "Server"), h("table", { class: "mini" }, h("tbody", {}, ...[["Version", info.version], ["Python", info.python], ["Data folder", info.data], ["Disk free", info.disk_free], ["PDF thumbnails", info.pdf_thumbs ? "on" : "off (pip install pymupdf)"], ["Exact Office view", info.office ? "available (needs Microsoft Office)" : "only on a Windows server with Office"]].map(([a, b]) => h("tr", { style: { cursor: "default" } }, h("td", { class: "muted" }, a), h("td", {}, b))))),
         h("div", { class: "row", style: { marginTop: "12px" } }, h("button", { class: "btn", onclick: () => download("/api/admin/backup") }, "Download database backup")))));
 }

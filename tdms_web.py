@@ -79,11 +79,11 @@ def client_ip():
     return request.remote_addr or "?"
 
 
-def too_many(ip):
+def too_many(ip, limit=8):
     with _FLOCK:
         items = [t for t in _FAILS.get(ip, []) if time.time() - t < 600]
         _FAILS[ip] = items
-        return len(items) >= 8
+        return len(items) >= limit
 
 
 def note_fail(ip):
@@ -219,9 +219,24 @@ def create_app():
     app.secret_key = key_file.read_text().strip()
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_NAME="tdms_session", PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12),
                       JSON_SORT_KEYS=False, MAX_CONTENT_LENGTH=None)
-    if cfg.get("behind_proxy"):
-        from werkzeug.middleware.proxy_fix import ProxyFix
-        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    from flask.sessions import SecureCookieSessionInterface
+
+    class LocalProxyFix:
+        """Believe X-Forwarded-* headers only when they come from THIS computer (cloudflared / tailscale), never from the internet."""
+        def __init__(self, inner):
+            self.inner, self.fix = inner, ProxyFix(inner, x_for=1, x_proto=1, x_host=1)
+
+        def __call__(self, environ, start_response):
+            if cfg.get("behind_proxy") or environ.get("REMOTE_ADDR") in ("127.0.0.1", "::1"):
+                return self.fix(environ, start_response)
+            return self.inner(environ, start_response)
+    app.wsgi_app = LocalProxyFix(app.wsgi_app)
+
+    class DynamicSession(SecureCookieSessionInterface):
+        def get_cookie_secure(self, app_):
+            return request.is_secure          # https (tunnel) -> Secure cookie; plain http inside the office -> normal cookie
+    app.session_interface = DynamicSession()
 
     @app.after_request
     def headers(r):
@@ -280,11 +295,13 @@ def create_app():
     def login(_):
         d = body()
         ip, login_id = client_ip(), str(d.get("login", "")).strip()
-        if too_many(ip):
+        acct = "u:" + login_id.lower()
+        if too_many(ip) or too_many(acct, 10):
             raise ApiError("Too many attempts. Please wait a few minutes.", 429)
         u = core.check_login(login_id, str(d.get("password", "")))
         if not u:
             note_fail(ip)
+            note_fail(acct)
             core.log(login_id[:60], "failed login (web)", ip)
             raise ApiError("Wrong email ID or password.", 401)
         if u["pending"]:
@@ -778,6 +795,91 @@ def create_app():
         core.log(u["username"], f"upload {how} (web)", f.filename)
         return jsonify({"id": did, "how": how, "cat_id": cat})
 
+    UID_RE = re.compile(r"^[a-f0-9]{16,40}$")
+
+    def chunk_dir(u, uid):
+        if not UID_RE.match(uid or ""):
+            raise ApiError("Bad upload id.")
+        return core.ROOT / "tmp" / "chunks" / f"{u['id']}_{uid}"
+
+    @app.post("/api/upload/chunk")
+    @api()
+    def upload_chunk(u):
+        try:
+            idx, total = int(request.form.get("index", -1)), int(request.form.get("total", 0))
+        except ValueError:
+            raise ApiError("Bad upload piece.")
+        f = request.files.get("chunk")
+        d = chunk_dir(u, request.form.get("uid", ""))
+        if not f or idx < 0 or total < 1 or total > 20000 or idx >= total:
+            raise ApiError("Bad upload piece.")
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f"{idx:05d}.tmp"
+        core._spool(f.stream, tmp)
+        os.replace(tmp, d / f"{idx:05d}.part")
+        mb = max_bytes()
+        if mb and sum(p.stat().st_size for p in d.glob("*.part")) > mb:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+            raise ApiError(f"The file is bigger than the allowed size ({core.size(mb)}).", 413)
+        return jsonify({"ok": True})
+
+    class ChainReader:
+        def __init__(self, paths):
+            self.paths, self.i, self.f = list(paths), 0, None
+
+        def read(self, n=-1):
+            while True:
+                if self.f is None:
+                    if self.i >= len(self.paths):
+                        return b""
+                    self.f = open(self.paths[self.i], "rb")
+                    self.i += 1
+                b = self.f.read(n if n and n > 0 else 1024 * 1024)
+                if b:
+                    return b
+                self.f.close()
+                self.f = None
+
+        def close(self):
+            if self.f:
+                self.f.close()
+                self.f = None
+
+    @app.post("/api/upload/finish")
+    @api()
+    def upload_finish(u):
+        import shutil
+        d = body()
+        dirp = chunk_dir(u, str(d.get("uid", "")))
+        try:
+            total, cat = int(d.get("total", 0)), int(d.get("cat") or 0)
+        except ValueError:
+            raise ApiError("Bad upload.")
+        parts = [dirp / f"{i:05d}.part" for i in range(total)]
+        if total < 1 or not dirp.exists() or not all(p.exists() for p in parts):
+            raise ApiError("Some pieces did not arrive. Please upload the file again.", 400)
+        need_cat(cat)
+        rel = [p for p in str(d.get("relpath", "")).replace("\\", "/").split("/")[:-1] if p and p not in (".", "..")]
+        for part in rel[:12]:
+            cat = core.get_or_make_cat(cat, part[:120])
+        name = str(d.get("filename", "")).strip() or "file"
+        rd = ChainReader(parts)
+        keep = False
+        try:
+            did, how = core.add_stream(cat, name, rd, u["id"], d.get("title") or None, d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200])
+        except core.NameConflict as e:
+            keep = True
+            return jsonify({"conflict": core.doc_dict(core.get_doc(e.doc["id"]), u["id"], is_admin(u))}), 409
+        except ValueError as e:
+            raise ApiError(str(e), 413)
+        finally:
+            rd.close()
+            if not keep:
+                shutil.rmtree(dirp, ignore_errors=True)
+        core.log(u["username"], f"upload {how} (web)", name)
+        return jsonify({"id": did, "how": how, "cat_id": cat})
+
     @app.post("/api/docs/<int:did>/version")
     @api()
     def version_new(u, did):
@@ -1176,10 +1278,6 @@ def create_app():
         return jsonify({"version": core.VERSION, "python": sys.version.split()[0], "data": str(core.ROOT), "port": cfg["port"], "urls": [f"http://{ip}:{cfg['port']}" for ip in local_ips()],
                         "disk_free": core.size(free), "pdf_thumbs": bool(fitz), "office": os.name == "nt", "behind_proxy": bool(cfg.get("behind_proxy")), "stats": core.stats(u["id"])})
 
-    @app.get("/manifest.json")
-    def manifest():
-        return send_from_directory(WEB, "manifest.json")
-
     @app.errorhandler(404)
     def nf(e):
         if request.path.startswith("/api/") or request.path.startswith("/files/"):
@@ -1203,11 +1301,28 @@ def create_app():
     return app
 
 
+def purge_chunks(hours=24):
+    import shutil
+    base = core.ROOT / "tmp" / "chunks"
+    if not base.exists():
+        return
+    for d in base.iterdir():
+        try:
+            if time.time() - d.stat().st_mtime > hours * 3600:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def flush_loop():
+    n = 0
     while True:
         time.sleep(2)
+        n += 1
         try:
             core.flush()
+            if n % 900 == 0:
+                purge_chunks()
         except Exception:
             pass
 
@@ -1220,9 +1335,10 @@ def main():
         return
     app = create_app()
     cfg = load_config()
-    port = int(os.environ.get("PORT", cfg["port"]))
-    host = "0.0.0.0"
+    port = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--port=")), cfg["port"]))
+    host = cfg["host"]
     threading.Thread(target=flush_loop, daemon=True).start()
+    purge_chunks()
     core.daily_backup(S)
     core.auto_purge(int(float(S.get("trash_days") or 30)))
     print("\n  TDMS web is running.\n")
