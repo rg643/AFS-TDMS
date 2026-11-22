@@ -1216,8 +1216,8 @@ def main():
         return
     app = create_app()
     cfg = load_config()
-    port = int(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--port=")), cfg["port"]))
-    host = cfg["host"]
+    port = int(os.environ.get("PORT", cfg["port"]))
+    host = "0.0.0.0"
     threading.Thread(target=flush_loop, daemon=True).start()
     core.daily_backup(S)
     core.auto_purge(int(float(S.get("trash_days") or 30)))
