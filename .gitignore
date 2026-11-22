@@ -1,0 +1,7 @@
+AFS_TDMS_Data/
+__pycache__/
+*.pyc
+TDMS.exe
+cloudflared-windows-amd64.msi
+tdms_error.log
+tdms_perf.log
