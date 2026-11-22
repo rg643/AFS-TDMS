@@ -1,4 +1,4 @@
-AFS_TDMS_Data/
+#AFS_TDMS_Data/
 __pycache__/
 *.pyc
 TDMS.exe
