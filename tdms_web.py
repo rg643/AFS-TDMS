@@ -1176,6 +1176,10 @@ def create_app():
         return jsonify({"version": core.VERSION, "python": sys.version.split()[0], "data": str(core.ROOT), "port": cfg["port"], "urls": [f"http://{ip}:{cfg['port']}" for ip in local_ips()],
                         "disk_free": core.size(free), "pdf_thumbs": bool(fitz), "office": os.name == "nt", "behind_proxy": bool(cfg.get("behind_proxy")), "stats": core.stats(u["id"])})
 
+    @app.get("/manifest.json")
+    def manifest():
+        return send_from_directory(WEB, "manifest.json")
+
     @app.errorhandler(404)
     def nf(e):
         if request.path.startswith("/api/") or request.path.startswith("/files/"):
