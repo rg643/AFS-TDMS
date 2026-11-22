@@ -1,15 +1,22 @@
 {
-  "name": "After Sales TDMS",
-  "short_name": "TDMS",
+  "name": "AFS-TDMS",
+  "short_name": "AFS-TDMS",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#003B75",
+  "description": "AFS Technical Document Management System",
   "icons": [
     {
-      "src": "/static/logo.png",
+      "src": "/favicon.ico",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/favicon.ico",
+      "sizes": "512x512",
+      "type": "image/x-icon"
     }
   ]
 }
