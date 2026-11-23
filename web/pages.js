@@ -121,7 +121,7 @@ async function renderDashboard(root) {
   const docTable = (rows, cols2) => !rows.length ? h("div", { class: "muted small", style: { padding: "10px 4px" } }, "Nothing here yet.") :
     h("table", { class: "mini" }, h("tbody", {}, ...rows.map(x => h("tr", { class: x.late ? "late" : "", onclick: () => openDoc(x) }, h("td", {}, fileIcon(x.type, 18), x.title), ...cols2(x).map(c => h("td", { class: "muted" }, c))))));
   add(wrap, pageHead("Dashboard", `Overview of the document library  \u00B7  signed in as ${S.me.name}`, iconBtn("refresh", "Refresh", () => renderDashboard(root))),
-    h("div", { class: "tiles" }, ...d.tiles.map(t => h("div", { class: "card tile", style: { "--c": TILE_COLORS[t.key] || "var(--blue)" } },
+    h("div", { class: "tiles" }, ...d.tiles.filter(t => !(isViewer() && (t.key === "trash" || t.key === "mine"))).map(t => h("div", { class: "card tile", style: { "--c": TILE_COLORS[t.key] || "var(--blue)" } },
       h("div", { class: "ti" }, svgIcon(TILE_ICONS[t.key] || "file", 22)), h("div", { class: "tb" }, h("div", { class: "l" }, t.label), h("div", { class: "v" }, String(t.value)),
         h("div", { class: "s" + (t.sub.startsWith("\u25B2") ? " up" : t.sub.startsWith("\u25BC") ? " down" : "") }, t.sub))))),
     h("div", { class: "grid3" }, h("div", { class: "card" }, h("h3", {}, "Recently opened by you"), docTable(d.opened, x => [x.cat])), h("div", { class: "card" }, h("h3", {}, "Your favorites"), docTable(d.favorites, x => [x.cat])),
@@ -156,9 +156,9 @@ async function renderUsers(root) {
   const act = (label, fn, cls = "") => h("button", { class: "btn " + cls, style: { marginRight: "4px" }, onclick: fn }, label);
   const run = (path, body, msg) => async () => { try { await post(path, body); toast(msg, "ok"); renderUsers(root); refreshBadges(); } catch (e) { toastErr(e); } };
   const rows = r.users.map(u => h("tr", {}, h("td", {}, avatar(u.id, 34, "&v=" + (u.has_photo ? 1 : 0))), h("td", {}, h("b", {}, u.name), h("div", { class: "muted small" }, u.email || u.username)), h("td", {}, "#" + (u.emp_id || "-")), h("td", {}, u.dept),
-    h("td", {}, h("span", { class: "badge", style: { "--c": u.role === "admin" ? "var(--red)" : "#607D8B" } }, u.role === "admin" ? "ADMIN" : "USER")),
+    h("td", {}, roleBadge(u.role)),
     h("td", {}, u.pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, "WAITING") : u.active ? h("span", { class: "badge", style: { "--c": "#1D8348" } }, "ACTIVE") : h("span", { class: "badge", style: { "--c": "#90A4AE" } }, "DISABLED")),
-    h("td", {}, u.pending ? [act("Approve", run(`/api/users/${u.id}/approve`, {}, "Approved."), "primary"), act("Reject", async () => { if (await confirmDlg("Reject", `Reject the request from ${u.name}?`, "Reject", "danger")) run(`/api/users/${u.id}/reject`, {}, "Rejected.")(); })] :
+    h("td", {}, u.pending ? [act("Approve...", () => approveDialog(u, () => { renderUsers(root); refreshBadges(); }), "primary"), act("Reject", async () => { if (await confirmDlg("Reject", `Reject the request from ${u.name}?`, "Reject", "danger")) run(`/api/users/${u.id}/reject`, {}, "Rejected.")(); })] :
       [act("Edit", () => profileDialog(u, () => renderUsers(root))), act("Reset password", () => resetPassword(u)), u.id === S.me.id ? "" : act(u.active ? "Disable" : "Enable", run(`/api/users/${u.id}/toggle`, {}, "Done.")),
         u.id === S.me.id ? "" : act("Delete", async () => { if (await confirmDlg("Delete user", `Delete ${u.name}? Their documents stay in the library.`, "Delete", "danger")) run(`/api/users/${u.id}/delete`, {}, "Deleted.")(); })])));
   add(root, pageHead("Users", "People who can sign in, and what they can do", pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, pending + " waiting for approval") : "", iconBtn("plus", "Add user", () => addUserDialog(() => renderUsers(root)), "primary")),
@@ -166,7 +166,7 @@ async function renderUsers(root) {
     h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["", "Name", "Employee ID", "Department", "Role", "Status", ""].map(x => h("th", {}, x)))), h("tbody", {}, ...rows)))));
 }
 function addUserDialog(done) {
-  const f = { email: h("input", { class: "inp", placeholder: "name@company.com" }), name: h("input", { class: "inp" }), emp: h("input", { class: "inp" }), dept: h("input", { class: "inp" }), pw: h("input", { class: "inp", type: "password" }), role: select([["user", "User"], ["admin", "Administrator"]], "user") };
+  const f = { email: h("input", { class: "inp", placeholder: "name@company.com" }), name: h("input", { class: "inp" }), emp: h("input", { class: "inp" }), dept: h("input", { class: "inp" }), pw: h("input", { class: "inp", type: "password" }), role: select([["user", "User"], ["viewer", "Viewer (read only)"], ["admin", "Administrator"]], S.brand.default_role || "user") };
   dialog({ title: "Add user", width: 520, body: [field("EMAIL ID (used to sign in)", f.email), field("FULL NAME", f.name), h("div", { class: "form2" }, field("EMPLOYEE ID", f.emp), field("DEPARTMENT", f.dept)), h("div", { class: "form2" }, field("PASSWORD", f.pw, `At least ${S.brand.min_password} characters`), field("ROLE", f.role))],
     buttons: [{ text: "Cancel" }, { text: "Add user", kind: "primary", fn: async () => { await post("/api/users", { email: f.email.value, name: f.name.value, emp_id: f.emp.value, dept: f.dept.value, password: f.pw.value, role: f.role.value }); toast("User added.", "ok"); done(); } }] });
 }
@@ -196,7 +196,7 @@ async function renderAdmin(root) {
   const inp = (k, ph = "") => h("input", { class: "inp", value: s[k], placeholder: ph });
   const col = k => { const c = h("input", { type: "color", value: s[k] }), t = h("input", { class: "inp", value: s[k], style: { width: "110px" }, oninput: () => { if (/^#[0-9a-f]{6}$/i.test(t.value)) c.value = t.value; } }); c.oninput = () => { t.value = c.value; }; const w = h("div", { class: "coltile" }, c, t); w.get = () => t.value; return w; };
   const f = { app_name: inp("app_name"), short_name: inp("short_name"), company: inp("company"), subtitle: inp("subtitle"), tagline: inp("tagline"), brand_red: col("brand_red"), brand_blue: col("brand_blue"), brand_navy: col("brand_navy"),
-    login_bg: select([["ocean", "Ocean"], ["midnight", "Midnight"], ["sunrise", "Sunrise"], ["slate", "Slate"]], s.login_bg), email_domain: inp("email_domain", "addverb.com"), min_password: inp("min_password"), max_mb: inp("max_mb", "0 = no limit"), trash_days: inp("trash_days") };
+    default_role: select([["user", "User - can add and edit"], ["viewer", "Viewer - read and download only"]], s.default_role || "user"), login_bg: select([["ocean", "Ocean"], ["midnight", "Midnight"], ["sunrise", "Sunrise"], ["slate", "Slate"]], s.login_bg), email_domain: inp("email_domain", "addverb.com"), min_password: inp("min_password"), max_mb: inp("max_mb", "0 = no limit"), trash_days: inp("trash_days") };
   const sw = (k, label) => { const c = h("input", { type: "checkbox", checked: s[k] === "1" }); c.get = () => (c.checked ? "1" : "0"); return [h("label", { class: "sw" }, c, label), c]; };
   const [swSign, cSign] = sw("allow_signup", "Allow people to create their own account"), [swAppr, cAppr] = sw("require_approval", "New accounts must be approved by an admin");
   const save = async () => {
@@ -208,7 +208,7 @@ async function renderAdmin(root) {
     h("div", { class: "card" }, h("h3", {}, "Branding"), field("APPLICATION NAME", f.app_name), h("div", { class: "form2" }, field("SHORT NAME", f.short_name), field("COMPANY", f.company)), field("SUBTITLE", f.subtitle), field("TAGLINE", f.tagline),
       h("div", { class: "form2" }, field("ACCENT COLOUR", f.brand_red), field("BLUE", f.brand_blue)), h("div", { class: "form2" }, field("NAVY (table headings)", f.brand_navy), field("LOGIN BACKGROUND", f.login_bg)),
       h("div", { class: "row", style: { marginTop: "14px" } }, h("button", { class: "btn", onclick: () => logoIn.click() }, "Change logo..."), h("button", { class: "btn ghost", onclick: async () => { await api("/api/admin/logo", { method: "DELETE" }); toast("Logo reset.", "ok"); S.logoBust = Date.now(); renderShell(); } }, "Use the default logo"), logoIn)),
-    h("div", { class: "card" }, h("h3", {}, "Rules"), swSign, swAppr, field("ONLY THIS EMAIL DOMAIN CAN SIGN UP", f.email_domain, "Leave empty to allow any domain"), h("div", { class: "form2" }, field("MINIMUM PASSWORD LENGTH", f.min_password), field("MAX FILE SIZE (MB)", f.max_mb)), field("KEEP DELETED DOCUMENTS (DAYS)", f.trash_days))),
+    h("div", { class: "card" }, h("h3", {}, "Rules"), swSign, swAppr, field("NEW ACCOUNTS START AS", f.default_role, "You can still choose the role when you approve an account."), field("ONLY THIS EMAIL DOMAIN CAN SIGN UP", f.email_domain, "Leave empty to allow any domain"), h("div", { class: "form2" }, field("MINIMUM PASSWORD LENGTH", f.min_password), field("MAX FILE SIZE (MB)", f.max_mb)), field("KEEP DELETED DOCUMENTS (DAYS)", f.trash_days))),
     h("div", { class: "row", style: { margin: "0 0 12px" } }, h("button", { class: "btn primary big", onclick: save }, "Save settings")),
     h("div", { class: "grid2e" },
       h("div", { class: "card" }, h("h3", {}, "Share with your team"), h("p", { class: "muted" }, "Team members open one of these addresses in their browser (same network or VPN):"), ...info.urls.map(u => h("div", {}, h("span", { class: "url" }, u))), info.urls.length ? "" : h("div", { class: "muted" }, "No network address found."),
@@ -221,7 +221,7 @@ async function renderAdmin(root) {
 function profileDialog(user, done) {
   const self = !user || user.id === S.me.id, u = user || S.me;
   const f = { name: h("input", { class: "inp", value: u.name }), email: h("input", { class: "inp", value: u.email }), emp: h("input", { class: "inp", value: u.emp_id, disabled: !isAdmin() }), dept: h("input", { class: "inp", value: u.dept }), des: h("input", { class: "inp", value: u.designation }), phone: h("input", { class: "inp", value: u.phone }),
-    role: select([["user", "User"], ["admin", "Administrator"]], u.role) };
+    role: select([["user", "User"], ["viewer", "Viewer (read only)"], ["admin", "Administrator"]], u.role) };
   f.role.disabled = !isAdmin() || self;
   const photoIn = h("input", { type: "file", accept: "image/*", style: { display: "none" }, onchange: async () => { const fd = new FormData(); fd.append("file", photoIn.files[0]); try { await api(`/api/users/${u.id}/photo`, { method: "POST", form: fd }); toast("Photo saved.", "ok"); if (self) { await reloadMe(); } if (done) done(); } catch (e) { toastErr(e); } } });
   const save = async () => { const r = await post(`/api/users/${u.id}`, { name: f.name.value, email: f.email.value, emp_id: f.emp.value, dept: f.dept.value, designation: f.des.value, phone: f.phone.value, role: f.role.value }); if (self) { S.me = r.user; renderShell(); } toast("Profile saved.", "ok"); if (done) done(); };
@@ -250,4 +250,15 @@ function mustChangeDialog() {
   const cur = h("input", { class: "inp", type: "password", autocomplete: "current-password" }), n1 = h("input", { class: "inp", type: "password" }), n2 = h("input", { class: "inp", type: "password" });
   const d = dialog({ title: "Set a new password", width: 460, body: [h("p", { class: "muted" }, "This account still uses the starting password. Please choose your own password now."), field("CURRENT PASSWORD", cur), field("NEW PASSWORD", n1, `At least ${S.brand.min_password} characters`), field("REPEAT NEW PASSWORD", n2)],
     buttons: [{ text: "Later" }, { text: "Change password", kind: "primary", fn: async () => { if (n1.value !== n2.value) throw new Error("The two new passwords are not the same."); await post("/api/password", { current: cur.value, new: n1.value }); toast("Password changed.", "ok"); S.mustChange = false; } }] });
+}
+
+/* choose what the new person can do, then approve */
+function approveDialog(u, done) {
+  let role = S.brand.default_role || "user";
+  const opts = [["viewer", "Viewer", "Can see, read and download documents. Cannot add, change or delete anything."], ["user", "User", "Can also add documents, and edit or delete the ones they added."], ["admin", "Administrator", "Full control: users, folders, settings and all documents."]];
+  const box = h("div", { class: "roleopts" });
+  const draw = () => { clear(box); opts.forEach(([v, t, d]) => box.appendChild(h("label", { class: "roleopt" + (v === role ? " on" : ""), onclick: () => { role = v; draw(); } }, h("input", { type: "radio", name: "role", checked: v === role }), h("div", {}, h("div", { class: "row" }, h("b", {}, t), roleBadge(v)), h("div", { class: "muted small" }, d))))); };
+  draw();
+  dialog({ title: `Approve ${u.name}`, width: 520, body: [h("p", { class: "muted", style: { margin: "4px 0 10px" } }, [u.email || u.username, u.emp_id ? "#" + u.emp_id : "", u.dept].filter(Boolean).join("   \u00B7   ")), h("label", { class: "lbl" }, "What can this account do?"), box],
+    buttons: [{ text: "Cancel" }, { text: "Approve", kind: "primary", fn: async () => { await post(`/api/users/${u.id}/approve`, { role }); toast(`${u.name} approved as ${role}.`, "ok"); done && done(); } }] });
 }

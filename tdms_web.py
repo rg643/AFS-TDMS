@@ -99,8 +99,23 @@ def current_user():
     return r[0] if r else None
 
 
-def api(admin=False, auth=True):
-    """Every JSON route: signed-in check, admin check, and a header that other websites cannot add (CSRF)."""
+ROLES = ("user", "viewer", "admin")
+
+
+def is_viewer(u):
+    return u["role"] == "viewer"
+
+
+def dd(r, u):
+    """a document as JSON for this person (viewers can never edit)"""
+    d = core.doc_dict(r, u["id"], is_admin(u))
+    if is_viewer(u):
+        d["can_edit"] = False
+    return d
+
+
+def api(admin=False, auth=True, write=False):
+    """Every JSON route: signed-in check, admin check, viewer (read-only) check, and a header that other websites cannot add (CSRF)."""
     def deco(fn):
         @wraps(fn)
         def wrap(*a, **k):
@@ -111,6 +126,8 @@ def api(admin=False, auth=True):
                 return jerr("Please sign in.", 401)
             if admin and u["role"] != "admin":
                 return jerr("Administrators only.", 403)
+            if write and u["role"] == "viewer":
+                return jerr("Viewer accounts can read and download documents, but cannot change anything.", 403)
             try:
                 return fn(u, *a, **k)
             except ApiError as e:
@@ -134,7 +151,7 @@ def is_admin(u):
 def brand():
     return {"app_name": S.get("app_name"), "short_name": S.get("short_name"), "company": S.get("company"), "subtitle": S.get("subtitle"), "tagline": S.get("tagline"),
             "red": S.get("brand_red"), "blue": S.get("brand_blue"), "navy": S.get("brand_navy"), "login_bg": S.get("login_bg") or "ocean", "allow_signup": S.flag("allow_signup"),
-            "email_domain": S.get("email_domain"), "min_password": int(S.get("min_password") or 8), "require_approval": S.flag("require_approval")}
+            "email_domain": S.get("email_domain"), "min_password": int(S.get("min_password") or 8), "require_approval": S.flag("require_approval"), "default_role": S.get("default_role") if S.get("default_role") in ("user", "viewer") else "user"}
 
 
 def type_table():
@@ -145,7 +162,7 @@ def type_table():
 
 def me_payload(u):
     return {"user": core.user_dict(u), "prefs": core.prefs_of(u["id"]), "brand": brand(), "version": core.VERSION, "types": type_table(),
-            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "statuses": core.STATUSES,
+            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "roles": list(ROLES), "statuses": core.STATUSES,
             "status_colors": core.STATUS_COLORS, "chips": list(core.TYPE_CHIPS), "orders": {k: list(v) for k, v in core.ORDERS.items()}, "questions": core.QUESTIONS}
 
 
@@ -165,12 +182,12 @@ def need_edit(d, u):
 
 def doc_json(d, u):
     r = core.get_doc(d["id"]) if not isinstance(d, dict) and "fav" not in d.keys() else d
-    return core.doc_dict(r, u["id"], is_admin(u))
+    return dd(r, u)
 
 
 def fav_aware(did, u):
     r = core.q(core.DOC_SQL + " where d.id=?", (u["id"], did))
-    return core.doc_dict(r[0], u["id"], is_admin(u)) if r else None
+    return dd(r[0], u) if r else None
 
 
 def type_colors_of(uid):
@@ -366,8 +383,8 @@ def create_app():
         if d.get("question") not in core.QUESTIONS:
             raise ApiError("Choose a security question.")
         appr = S.flag("require_approval")
-        core.ex("insert into users(username,name,pw,role,active,pending,question,answer,emp_id,dept,email,created) values(?,?,?,'user',?,?,?,?,?,?,?,?)",
-                (e, name, core.hashpw(pw), 0 if appr else 1, 1 if appr else 0, d["question"], core.hashpw(str(d["answer"]).strip().lower()), str(d.get("emp_id", "")).strip()[:40],
+        core.ex("insert into users(username,name,pw,role,active,pending,question,answer,emp_id,dept,email,created) values(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (e, name, core.hashpw(pw), S.get("default_role") if S.get("default_role") in ("user", "viewer") else "user", 0 if appr else 1, 1 if appr else 0, d["question"], core.hashpw(str(d["answer"]).strip().lower()), str(d.get("emp_id", "")).strip()[:40],
                  str(d.get("dept", "")).strip()[:60], e, core.now()))
         core.log(e, "account requested (web)" if appr else "account created (web)")
         return jsonify({"ok": True, "pending": appr})
@@ -453,7 +470,7 @@ def create_app():
         err = core.pw_error(str(d.get("password", "")), str(d.get("password", "")), minlen)
         if err:
             raise ApiError(err)
-        role = "admin" if d.get("role") == "admin" else "user"
+        role = d.get("role") if d.get("role") in ROLES else "user"
         core.ex("insert into users(username,name,pw,role,emp_id,dept,email,created) values(?,?,?,?,?,?,?,?)",
                 (e, str(d["name"]).strip(), core.hashpw(d["password"]), role, str(d.get("emp_id", "")).strip(), str(d.get("dept", "")).strip(), e, core.now()))
         core.log(u["username"], "user added (web)", e)
@@ -475,7 +492,7 @@ def create_app():
             raise ApiError("That email ID is already used by another account.")
         emp = str(d.get("emp_id", t["emp_id"] or "")).strip() if is_admin(u) else (t["emp_id"] or "")
         role = t["role"]
-        if is_admin(u) and uid != u["id"] and d.get("role") in ("user", "admin"):
+        if is_admin(u) and uid != u["id"] and d.get("role") in ROLES:
             role = d["role"]
         core.ex("update users set name=?, emp_id=?, dept=?, designation=?, email=?, phone=?, role=? where id=?",
                 (name, emp, str(d.get("dept", t["dept"] or "")).strip()[:80], str(d.get("designation", t["designation"] or "")).strip()[:80], email,
@@ -486,7 +503,8 @@ def create_app():
     def user_action(u, uid, what):
         t = load_user(uid)
         if what == "approve" and t["pending"]:
-            core.ex("update users set active=1, pending=0 where id=?", (uid,))
+            role = body().get("role")
+            core.ex("update users set active=1, pending=0, role=? where id=?", (role if role in ROLES else (t["role"] if t["role"] in ROLES else "user"), uid))
         elif what == "reject" and t["pending"]:
             core.ex("delete from users where id=?", (uid,))
         elif what == "toggle":
@@ -508,7 +526,7 @@ def create_app():
             core.ex("update users set pw=? where id=?", (core.hashpw(pw), uid))
         else:
             raise ApiError("Nothing to do.")
-        core.log(u["username"], f"user {what} (web)", t["username"])
+        core.log(u["username"], f"user {what} (web)", t["username"] + (f" as {body().get('role')}" if what == "approve" and body().get("role") else ""))
         return jsonify({"ok": True})
 
     @app.post("/api/users/<int:uid>/<what>")
@@ -565,7 +583,7 @@ def create_app():
     @app.get("/api/folders")
     @api()
     def folders_get(u):
-        return jsonify({"folders": folders_payload(), "bin": core.trash_count(u["id"], is_admin(u))})
+        return jsonify({"folders": folders_payload(), "bin": 0 if is_viewer(u) else core.trash_count(u["id"], is_admin(u))})
 
     def need_cat(cid):
         r = core.q("select * from categories where id=?", (cid,))
@@ -633,6 +651,8 @@ def create_app():
     def docs_list(u):
         a = request.args
         view = VIEW_MAP.get(a.get("view", "folder"), VIEW_MAP["folder"])
+        if view == "Recycle bin" and is_viewer(u):
+            raise ApiError("Viewer accounts do not have a Recycle bin.", 403)
         try:
             cat = int(a.get("cat")) if a.get("cat") else None
         except ValueError:
@@ -643,7 +663,7 @@ def create_app():
         chip = a.get("type", "all")
         if chip in core.TYPE_CHIPS and core.TYPE_CHIPS[chip]:
             rows = [r for r in rows if core.ftype(r["filename"])[0] in core.TYPE_CHIPS[chip]]
-        out = [core.doc_dict(r, u["id"], is_admin(u)) for r in rows[:3000]]
+        out = [dd(r, u) for r in rows[:3000]]
         return jsonify({"docs": out, "total": len(rows), "stamp": list(core.docs_stamp())})
 
     @app.get("/api/docs/<int:did>")
@@ -653,7 +673,7 @@ def create_app():
         return jsonify({"doc": fav_aware(did, u)})
 
     @app.put("/api/docs/<int:did>")
-    @api()
+    @api(write=True)
     def doc_update(u, did):
         d, data = get_doc_or_404(did, u), body()
         need_edit(d, u)
@@ -687,7 +707,7 @@ def create_app():
         return {"done": done, "skipped": skipped}
 
     @app.post("/api/docs/delete")
-    @api()
+    @api(write=True)
     def docs_delete(u):
         d = body()
         ids = ids_of(d)
@@ -700,7 +720,7 @@ def create_app():
         return jsonify(res)
 
     @app.post("/api/docs/restore")
-    @api()
+    @api(write=True)
     def docs_restore(u):
         res = each_doc(u, ids_of(body()), core.restore_doc, allow_deleted=True)
         core.log(u["username"], "restore (web)", f"{res['done']} document(s)")
@@ -716,7 +736,7 @@ def create_app():
         return jsonify({"done": len(rows)})
 
     @app.post("/api/docs/move")
-    @api()
+    @api(write=True)
     def docs_move(u):
         d = body()
         cat = int(d.get("cat") or 0)
@@ -739,7 +759,7 @@ def create_app():
         return jsonify({"ok": True})
 
     @app.post("/api/docs/reorder")
-    @api()
+    @api(write=True)
     def docs_reorder(u):
         d = body()
         ids = ids_of(d)
@@ -754,7 +774,7 @@ def create_app():
         return jsonify({"ok": True})
 
     @app.post("/api/links")
-    @api()
+    @api(write=True)
     def link_add(u):
         d = body()
         cat = int(d.get("cat") or 0)
@@ -776,7 +796,7 @@ def create_app():
             return 0
 
     @app.post("/api/upload")
-    @api()
+    @api(write=True)
     def upload(u):
         f = request.files.get("file")
         if not f or not f.filename:
@@ -789,7 +809,7 @@ def create_app():
         try:
             did, how = core.add_stream(cat, f.filename, f.stream, u["id"], request.form.get("title") or None, request.form.get("mode") or None, max_bytes(), str(request.form.get("note", ""))[:200])
         except core.NameConflict as e:
-            return jsonify({"conflict": core.doc_dict(core.get_doc(e.doc["id"]), u["id"], is_admin(u))}), 409
+            return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
         except ValueError as e:
             raise ApiError(str(e), 413)
         core.log(u["username"], f"upload {how} (web)", f.filename)
@@ -803,7 +823,7 @@ def create_app():
         return core.ROOT / "tmp" / "chunks" / f"{u['id']}_{uid}"
 
     @app.post("/api/upload/chunk")
-    @api()
+    @api(write=True)
     def upload_chunk(u):
         try:
             idx, total = int(request.form.get("index", -1)), int(request.form.get("total", 0))
@@ -847,7 +867,7 @@ def create_app():
                 self.f = None
 
     @app.post("/api/upload/finish")
-    @api()
+    @api(write=True)
     def upload_finish(u):
         import shutil
         d = body()
@@ -870,7 +890,7 @@ def create_app():
             did, how = core.add_stream(cat, name, rd, u["id"], d.get("title") or None, d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200])
         except core.NameConflict as e:
             keep = True
-            return jsonify({"conflict": core.doc_dict(core.get_doc(e.doc["id"]), u["id"], is_admin(u))}), 409
+            return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
         except ValueError as e:
             raise ApiError(str(e), 413)
         finally:
@@ -881,7 +901,7 @@ def create_app():
         return jsonify({"id": did, "how": how, "cat_id": cat})
 
     @app.post("/api/docs/<int:did>/version")
-    @api()
+    @api(write=True)
     def version_new(u, did):
         d = get_doc_or_404(did, u)
         need_edit(d, u)
@@ -905,7 +925,7 @@ def create_app():
         return jsonify({"versions": [cur] + old})
 
     @app.post("/api/docs/<int:did>/versions/<int:vid>/restore")
-    @api()
+    @api(write=True)
     def version_restore(u, did, vid):
         d = get_doc_or_404(did, u)
         need_edit(d, u)
@@ -1029,7 +1049,7 @@ def create_app():
                     text = raw.decode("utf-8")
                 except UnicodeDecodeError:
                     text = raw.decode("cp1252", errors="replace")
-                return jsonify({**info, "kind": "text", "text": text, "editable": bool(is_admin(u) or d["uploader_id"] == u["id"])})
+                return jsonify({**info, "kind": "text", "text": text, "editable": bool((is_admin(u) or d["uploader_id"] == u["id"]) and not is_viewer(u))})
             if ext in (".doc", ".rtf", ".odt", ".xls", ".xlsb", ".ppt", ".pps", ".ppsx"):
                 return jsonify({**info, "kind": "office"})
         except Exception as e:
@@ -1037,7 +1057,7 @@ def create_app():
         return jsonify({**info, "kind": "other"})
 
     @app.put("/api/docs/<int:did>/text")
-    @api()
+    @api(write=True)
     def text_save(u, did):
         d = get_doc_or_404(did, u)
         need_edit(d, u)
@@ -1154,7 +1174,7 @@ def create_app():
     def slim(rows, u, extra=None):
         out = []
         for r in rows:
-            d = core.doc_dict(r, u["id"], is_admin(u))
+            d = dd(r, u)
             if extra:
                 d.update(extra(r))
             out.append(d)
@@ -1186,7 +1206,7 @@ def create_app():
 
     # ------------------------------------------------------------------ admin
     ADMIN_KEYS = {"app_name", "short_name", "company", "subtitle", "tagline", "brand_red", "brand_blue", "brand_navy", "login_bg", "allow_signup", "require_approval", "email_domain",
-                  "min_password", "max_mb", "auto_backup", "trash_days"}
+                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role"}
 
     @app.get("/api/admin/settings")
     @api(admin=True)
@@ -1213,6 +1233,8 @@ def create_app():
                 v = str(max(1, min(365, int(v or 30))))
             if k == "max_mb":
                 v = str(max(0.0, float(v or 0)))
+            if k == "default_role" and v not in ("user", "viewer"):
+                raise ApiError("New accounts can start as User or Viewer.")
             if k == "email_domain":
                 v = v.lstrip("@").lower()
             if k in ("app_name", "short_name") and not v:

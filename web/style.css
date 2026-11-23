@@ -351,3 +351,31 @@ table.docs td.ck input,table.docs th.ck input{accent-color:var(--blue);width:15p
 .viewer .vbar{padding:2px 2px}
 .vbody{border:1px solid var(--line);box-shadow:none}
 .cnt:empty{display:none}
+
+
+/* =====================================================  roles, account card, refresh  ===================================================== */
+.badge.role{font-size:10.5px;letter-spacing:.06em;padding:2px 8px}
+.profile{gap:10px;padding:4px 12px 4px 4px;background:var(--card);border:1px solid var(--line);box-shadow:0 1px 2px rgba(16,24,40,.05)}
+.profile:hover{background:var(--tile)}
+.profile .pt{display:flex;flex-direction:column;align-items:flex-start;gap:3px;line-height:1.1}
+.profile .nm{font-weight:600;font-size:13.5px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile svg{color:var(--muted)}
+.pnode{padding:0;min-width:300px;overflow:hidden}
+.pmenu{width:300px}
+.pm-head{display:flex;gap:14px;align-items:center;padding:18px 18px 16px;background:linear-gradient(135deg,color-mix(in srgb,var(--navy) 10%,var(--card)),var(--tile));border-bottom:1px solid var(--line)}
+.pm-head img{width:56px;height:56px;border-radius:50%;border:3px solid var(--card);box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.pm-who{min-width:0}.pm-name{font-weight:700;font-size:15px;color:var(--title);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-meta{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}
+.pm-list{padding:6px}.pm-foot{border-top:1px solid var(--line)}
+.pm-it{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:9px;cursor:pointer}
+.pm-it:hover{background:var(--hover)}.pm-it svg{color:var(--muted)}
+.pm-it.danger{color:#C62828}.pm-it.danger svg{color:#C62828}.pm-it.danger:hover{background:color-mix(in srgb,#D32F2F 10%,var(--card))}
+.rolepill{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:14px;background:color-mix(in srgb,#0097A7 14%,var(--card));color:#00838F;font-size:12px;font-weight:600}
+.btn.spin svg{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.roleopts{display:flex;flex-direction:column;gap:8px}
+.roleopt{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid var(--line);border-radius:12px;cursor:pointer}
+.roleopt:hover{background:var(--tile)}
+.roleopt.on{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--card));box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 14%,transparent)}
+.roleopt input{margin-top:4px;accent-color:var(--blue)}
+.top .gsearch{max-width:560px}

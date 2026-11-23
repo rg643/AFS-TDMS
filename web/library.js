@@ -42,10 +42,9 @@ function renderLibrary(root) {
   const hidden = flag("folders_hidden");
   L.folders = h("div", { class: "card folders" + (hidden ? " hidden" : "") });
   L.tree = h("div", { class: "tree" });
-  L.bin = h("div", { class: "binrow", onclick: () => setView("bin") }, h("img", { src: "/icon/trash/t.png?s=44&c=E0713F", width: 22, height: 22 }), h("span", {}, "Recycle bin"), h("span", { class: "cnt" }));
+  L.bin = h("div", { class: "binrow" + (isViewer() ? " hidden" : ""), onclick: () => setView("bin") }, h("img", { src: "/icon/trash/t.png?s=44&c=E0713F", width: 22, height: 22 }), h("span", {}, "Recycle bin"), h("span", { class: "cnt" }));
   const manage = isAdmin() ? h("button", { class: "btn", onclick: e => { e.stopPropagation(); popMenu(folderMenuItems(), 0, 0, e.currentTarget); } }, "Manage \u25BE") : null;
   add(L.folders, h("div", { class: "head" }, h("b", {}, "Folders"), manage), L.tree, L.bin);
-  L.search = h("input", { type: "search", placeholder: "Search in library...", value: S.q, oninput: debounce(() => { S.q = L.search.value.trim(); loadDocs().then(() => { renderToolbar(); renderList(); }).catch(toastErr); }, 250) });
   L.tbar = h("div", { class: "toolbar" });
   L.crumb = h("div", { class: "crumb" });
   L.count = h("span", { class: "muted small" });
@@ -89,14 +88,30 @@ function renderTree() {
 }
 function selectFolder(id) {
   for (const p of folderPath(id)) if (p.id !== id) S.expanded.add(p.id);
-  S.view = "folder"; S.cat = id; S.q = ""; if (L.search) L.search.value = "";
+  S.view = "folder"; S.cat = id; clearSearch();
   S.sel.clear(); S.anchor = null;
   savePrefs({ last_cat: id });
   renderTree(); renderToolbar();
   if (L.table) { clear(L.table); L.table.appendChild(skeleton(7)); }
   loadDocs().then(renderList).catch(toastErr);
 }
+function clearSearch() { S.q = ""; S.prev = null; if (S.gs) S.gs.value = ""; }
+/* the ONE search box (top of the page): searches all documents; clearing it returns to the folder you were in */
+function setSearch(v) {
+  v = (v || "").trim();
+  if (v === S.q) return;
+  if (v && !S.q) S.prev = { view: S.view, cat: S.cat };
+  S.q = v;
+  if (v) { S.view = "all"; S.cat = null; }
+  else if (S.prev) { S.view = S.prev.view; S.cat = S.prev.cat; S.prev = null; if (S.view === "folder" && !S.cat) S.cat = +S.prefs.last_cat || null; }
+  S.sel.clear(); S.anchor = null;
+  if (S.route !== "library") { go("library"); return; }
+  renderTree(); renderToolbar();
+  if (L.table) { clear(L.table); L.table.appendChild(skeleton(6)); }
+  loadDocs().then(renderList).catch(toastErr);
+}
 function setView(v) {
+  clearSearch();
   S.view = v; S.sel.clear(); S.anchor = null; if (v !== "folder") S.cat = v === "bin" || v === "folder" ? null : S.cat;
   if (v !== "folder") S.cat = null;
   if (v === "folder" && !S.cat) S.cat = +S.prefs.last_cat || (childrenOf(null)[0] || {}).id;
@@ -154,16 +169,21 @@ function pickFolder(title, exclude = new Set(), allowTop = false) {
 /* ---------- toolbar ---------- */
 function renderToolbar() {
   clear(L.tbar);
-  const bin = S.view === "bin", one = S.sel.size === 1, any = S.sel.size > 0;
+  const w = canWrite(), bin = S.view === "bin", one = S.sel.size === 1, any = S.sel.size > 0;
   const grp = (...b) => h("div", { class: "tgroup" }, ...b);
   const sep = () => h("span", { class: "vsep" });
-  add(L.tbar, h("div", { class: "search" }, L.search), iconBtn("sliders", "View", e => popMenu(viewMenuItems(), 0, 0, e.currentTarget), "", false, "Show, order, columns and layout"),
-    iconBtn("sidebar", "Folders", () => { savePrefs({ folders_hidden: flag("folders_hidden") ? "0" : "1" }); L.folders.classList.toggle("hidden", flag("folders_hidden")); }, "", false, "Show / hide the folder panel"), h("span", { class: "spacer" }));
-  if (bin) {
+  const rb = iconBtn("refresh", "Refresh", async () => { rb.classList.add("spin"); try { await refreshLibrary(); } finally { rb.classList.remove("spin"); } }, "", false, "Reload the folders and documents");
+  add(L.tbar, iconBtn("sliders", "View", e => popMenu(viewMenuItems(), 0, 0, e.currentTarget), "", false, "Show, order, columns and layout"),
+    iconBtn("sidebar", "Folders", () => { savePrefs({ folders_hidden: flag("folders_hidden") ? "0" : "1" }); L.folders.classList.toggle("hidden", flag("folders_hidden")); }, "", false, "Show / hide the folder panel"), rb,
+    w ? null : h("span", { class: "rolepill", title: "Your account can read and download documents" }, svgIcon("eye", 14), "Read-only access"), h("span", { class: "spacer" }));
+  if (!w) {
+    add(L.tbar, iconBtn("open", "Open", () => selIds().forEach(openDoc), "navy", !any, "Open in a tab"), iconBtn("star", "", () => favSel(), "", !any, "Favorite on / off"), iconBtn("download", "Download", downloadSel, "", !any, "Download the selected documents"),
+      iconBtn("checkall", "", selectAll, "", false, "Select all   (Ctrl+A)"), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More"));
+  } else if (bin) {
     add(L.tbar, iconBtn("restore", "Restore", restoreSel, "navy", !any), iconBtn("checkall", "", selectAll, "", false, "Select all"), iconBtn("trash", "Delete forever", () => deleteSel(true), "dangerline", !any), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More"));
   } else {
     add(L.tbar, iconBtn("plus", "Add", e => popMenu(addItems(), 0, 0, e.currentTarget), "primary", false, "Upload files, a folder or a web link"), sep(),
-      grp(iconBtn("open", "Open", () => selIds().forEach(openDoc), "", !any, "Open in a tab"), iconBtn("star", "", () => favSel(), "", !any, "Favorite on / off")),
+      grp(iconBtn("open", "Open", () => selIds().forEach(openDoc), "", !any, "Open in a tab"), iconBtn("star", "", () => favSel(), "", !any, "Favorite on / off"), iconBtn("download", "", downloadSel, "", !any, "Download")),
       grp(iconBtn("up", "", () => moveSel(-1), "", !one && !any, "Move up   (Alt+Up)"), iconBtn("down", "", () => moveSel(1), "", !one && !any, "Move down   (Alt+Down)")),
       iconBtn("checkall", "", selectAll, "", false, "Select all   (Ctrl+A)"), sep(), iconBtn("trash", "Delete", () => deleteSel(false), "dangerline", !any, "Move to the Recycle bin   (Del)"), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More actions"));
   }
@@ -175,7 +195,7 @@ function addItems() {
 }
 function viewMenuItems() {
   const items = [{ hd: "SHOW" }];
-  for (const [v, t] of VIEWS) items.push({ label: t, check: S.view === v, fn: () => setView(v) });
+  for (const [v, t] of VIEWS) if (!(isViewer() && v === "bin")) items.push({ label: t, check: S.view === v, fn: () => setView(v) });
   items.push({ sep: 1 }, { hd: "ORDER BY" });
   for (const [t, k, d] of ORDERS) items.push({ label: t, check: S.order === k && S.desc === d, fn: () => { S.order = k; S.desc = d; savePrefs({ order_key: k, order_desc: d ? "1" : "0" }); loadDocs().then(renderList).catch(toastErr); } });
   items.push({ sep: 1 }, { hd: "COLUMNS" });
@@ -187,6 +207,7 @@ function viewMenuItems() {
 }
 function moreItems() {
   const any = S.sel.size > 0, one = S.sel.size === 1;
+  if (isViewer()) return [{ label: "Download", dis: !any, fn: downloadSel }, { label: "Save selected as ZIP", dis: !any, fn: zipSel }, { label: "Export this list (CSV)", fn: exportList }, { sep: 1 }, { label: "Select all   (Ctrl+A)", fn: selectAll }];
   if (S.view === "bin") return [{ label: "Restore", dis: !any, fn: restoreSel }, { label: "Delete forever", dis: !any, fn: () => deleteSel(true) }, isAdmin() ? { sep: 1 } : null, isAdmin() ? { label: "Empty the Recycle bin", fn: emptyBin } : null];
   return [{ label: "Details, status, tags...", dis: !one, fn: editDetails }, { label: "Rename   (F2)", dis: !one, fn: renameDoc }, { label: "Move to folder...", dis: !any, fn: moveDocs }, { label: "New version of this document...", dis: !one, fn: newVersion },
     { label: "Version history...", dis: !one, fn: versionHistory }, { sep: 1 }, { label: "Download", dis: !any, fn: downloadSel }, { label: "Save selected as ZIP", dis: !any, fn: zipSel }, { label: "Export this list (CSV)", fn: exportList },
@@ -374,6 +395,7 @@ function pickFiles(folder) {
   document.body.appendChild(inp); inp.click();
 }
 function setupDrop(zone) {
+  if (isViewer()) return;
   let depth = 0, ov = null;
   const stop = e => { e.preventDefault(); e.stopPropagation(); };
   const hasFiles = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
@@ -481,11 +503,11 @@ async function startUpload(items, cat) {
 document.addEventListener("keydown", e => {
   if (S.route !== "library" || !L.root || !L.root.isConnected || document.querySelector(".overlay")) return;
   const tag = (e.target.tagName || "").toLowerCase(); if (tag === "input" || tag === "textarea" || tag === "select") { if (!(e.target.type === "checkbox")) return; }
-  if (e.key === "Delete" && S.sel.size) { e.preventDefault(); deleteSel(S.view === "bin"); }
-  else if (e.key === "F2" && S.sel.size === 1) { e.preventDefault(); renameDoc(); }
+  if (e.key === "Delete" && S.sel.size && canWrite()) { e.preventDefault(); deleteSel(S.view === "bin"); }
+  else if (e.key === "F2" && S.sel.size === 1 && canWrite()) { e.preventDefault(); renameDoc(); }
   else if (e.key === "Enter" && S.sel.size && S.view !== "bin") { e.preventDefault(); selIds().forEach(openDoc); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); }
-  else if (e.altKey && e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); }
-  else if (e.altKey && e.key === "ArrowDown") { e.preventDefault(); moveSel(1); }
+  else if (e.altKey && e.key === "ArrowUp" && canWrite()) { e.preventDefault(); moveSel(-1); }
+  else if (e.altKey && e.key === "ArrowDown" && canWrite()) { e.preventDefault(); moveSel(1); }
   else if (e.key === "Escape") clearSel();
 });

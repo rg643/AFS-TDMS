@@ -225,7 +225,12 @@ const ICONS = {
   refresh: '<path d="M20 11a8 8 0 0 0-14.5-3.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14.5 3.5L20 15M20 20v-5h-5"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/>',
-  pdf: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M9.5 15h5M9.5 18h3"/>'
+  pdf: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M9.5 15h5M9.5 18h3"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
+  logout: '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M15 8l4 4-4 4M19 12H9"/>',
+  keyboard: '<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>'
 };
 function svgIcon(name, size) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -247,4 +252,19 @@ function emptyState(icon, title, hint, ...actions) {
 }
 function skeleton(rows = 8) {
   return h("div", { class: "skelbox" }, ...Array.from({ length: rows }, (_, i) => h("div", { class: "skelrow" }, h("i", { class: "skel", style: { width: "22px" } }), h("i", { class: "skel", style: { width: 30 + (i * 37) % 38 + "%" } }), h("i", { class: "skel", style: { width: "12%", marginLeft: "auto" } }))));
+}
+
+const isViewer = () => !!S.me && S.me.role === "viewer";
+const canWrite = () => !!S.me && S.me.role !== "viewer";
+const ROLE_NAMES = { admin: "ADMIN", user: "USER", viewer: "VIEWER" };
+function roleBadge(role) { return h("span", { class: "badge role", style: { "--c": role === "admin" ? "var(--red)" : role === "viewer" ? "#0097A7" : "var(--blue)" } }, ROLE_NAMES[role] || String(role).toUpperCase()); }
+/* show any content in a floating panel under an element */
+function popNode(node, anchor, alignRight) {
+  closeMenu();
+  const m = h("div", { class: "menu pnode", onclick: e => e.stopPropagation() }, node);
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect(), w = m.offsetWidth;
+  let x = alignRight ? r.right - w : r.left; x = Math.max(8, Math.min(x, innerWidth - w - 8));
+  m.style.left = x + "px"; m.style.top = r.bottom + 6 + "px";
+  _menu = m;
 }

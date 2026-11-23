@@ -75,7 +75,7 @@ function recover() {
 /* ---------- shell ---------- */
 async function start(me) {
   S.me = me.user; S.prefs = me.prefs; applyBrand(me.brand); S.types = me.types; S.statuses = me.statuses; S.statusColors = me.status_colors; S.chips = me.chips; S.questions = me.questions; S.exactOk = me.exact_ok; S.mustChange = me.must_change;
-  S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = [];
+  S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = []; S.prev = null;
   const t = S.prefs.theme || localStorage.getItem("tdms_theme") || "light"; applyTheme(t); localStorage.setItem("tdms_theme", t);
   renderShell();
   clearInterval(S.poll); S.poll = setInterval(poll, 15000);
@@ -84,14 +84,26 @@ async function start(me) {
 }
 function renderShell() {
   const app = clear($("#app")), b = S.brand;
-  const gs = h("input", { type: "search", placeholder: "Search all documents...", onkeydown: e => { if (e.key === "Enter" && gs.value.trim()) { S.view = "all"; S.cat = null; S.q = gs.value.trim(); S.sel.clear(); gs.value = ""; go("library"); if (S.route === "library") route(); } } });
-  const prof = h("button", { class: "profile", onclick: e => { e.stopPropagation(); popMenu([{ label: "My profile and settings...", fn: () => profileDialog() }, { label: "Dark / light theme", fn: toggleTheme }, { label: "Shortcuts and tips", fn: helpDialog }, { sep: 1 }, { label: "Sign out", fn: logout }], 0, 0, e.currentTarget); } },
-    avatar(S.me.id, 36, "&v=" + (S.me.has_photo ? 1 : 0)), h("div", {}, h("div", { class: "nm" }, S.me.name), h("div", { class: "em" }, [S.me.email || S.me.username, S.me.emp_id ? "#" + S.me.emp_id : "", S.me.role === "admin" ? "ADMINISTRATOR" : "USER"].filter(Boolean).join("  \u00B7  "))));
+  const gs = h("input", { type: "search", placeholder: "Search all documents...", value: S.q || "", autocomplete: "off", spellcheck: "false",
+    oninput: debounce(() => setSearch(gs.value), 280), onkeydown: e => { if (e.key === "Enter") setSearch(gs.value); else if (e.key === "Escape") { gs.value = ""; setSearch(""); gs.blur(); } } });
+  S.gs = gs;
+  const prof = h("button", { class: "profile", title: "Account", onclick: e => { e.stopPropagation(); profilePanel(e.currentTarget); } },
+    avatar(S.me.id, 34, "&v=" + (S.me.has_photo ? 1 : 0)), h("span", { class: "pt" }, h("span", { class: "nm" }, S.me.name), roleBadge(S.me.role)), svgIcon("down", 14));
   const top = h("div", { class: "top" }, h("img", { class: "logo", src: "/brand/logo.png?" + (S.logoBust || ""), alt: "", onerror: e => e.target.remove() }), h("div", { class: "sep" }), h("div", {}, h("div", { class: "appname" }, b.app_name), h("div", { class: "apptag" }, b.subtitle)),
-    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), h("button", { class: "btn sq", title: "Dark / light", onclick: toggleTheme }, theme() === "dark" ? "\u2600" : "\u263E"), prof);
+    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), h("button", { class: "btn sq ghost", title: "Dark / light theme", onclick: toggleTheme }, svgIcon(theme() === "dark" ? "sun" : "moon", 18)), prof);
   S.tabBar = h("div", { class: "tabs" }); S.page = h("div", { class: "page" });
   add(app, h("div", { class: "shell" }, top, S.tabBar, S.page));
   renderTabs(); route();
+}
+/* the account card in the top corner */
+function profilePanel(anchor) {
+  const u = S.me, dark = theme() === "dark";
+  const item = (icon, label, fn, cls = "") => h("div", { class: "pm-it " + cls, onclick: () => { closeMenu(); fn(); } }, svgIcon(icon, 17), h("span", {}, label));
+  popNode(h("div", { class: "pmenu" },
+    h("div", { class: "pm-head" }, avatar(u.id, 56, "&v=" + (u.has_photo ? 1 : 0)), h("div", { class: "pm-who" }, h("div", { class: "pm-name" }, u.name), h("div", { class: "muted small" }, u.email || u.username),
+      h("div", { class: "pm-meta" }, roleBadge(u.role), u.emp_id ? h("span", { class: "muted small" }, "#" + u.emp_id) : "", u.dept ? h("span", { class: "muted small" }, u.dept) : ""))),
+    h("div", { class: "pm-list" }, item("settings", "My profile and settings", () => profileDialog()), item(dark ? "sun" : "moon", dark ? "Switch to light theme" : "Switch to dark theme", toggleTheme), item("keyboard", "Shortcuts and tips", helpDialog)),
+    h("div", { class: "pm-list pm-foot" }, item("logout", "Sign out", logout, "danger"))), anchor, true);
 }
 function toggleTheme() { const t = theme() === "dark" ? "light" : "dark"; applyTheme(t); localStorage.setItem("tdms_theme", t); savePrefs({ theme: t }); renderShell(); }
 function logout() { post("/api/logout").catch(() => { }).finally(() => { S.me = null; showLogin(); }); }
