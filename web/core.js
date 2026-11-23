@@ -6,7 +6,7 @@ const S = {
   view: "folder", cat: null, docs: [], total: 0, sel: new Set(), anchor: null, order: "pos", desc: false, chip: "all", q: "",
   stamp: null, pending: 0
 };
-const MAIN_COLORS = { library: "#2E6DB4", dashboard: "#1D8348", users: "#8E44AD", activity: "#F28C1E", admin: "#607D8B" };
+const MAIN_COLORS = { library: "#2E6DB4", dashboard: "#1D8348", approvals: "#00897B", users: "#8E44AD", activity: "#F28C1E", admin: "#607D8B" };
 
 /* ---------- tiny DOM builder: h("div", {class:"x", onclick: fn}, child, "text") ---------- */
 function h(tag, attrs, ...kids) {
@@ -226,6 +226,10 @@ const ICONS = {
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/>',
   pdf: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M9.5 15h5M9.5 18h3"/>',
+  bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15l1.5-2Z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
+  approve: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
+  folderplus: '<path d="M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7Z"/><path d="M12 11v5M9.5 13.5h5"/>',
+  inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-5Z"/><path d="M4 13.5h4.5l1 2h5l1-2H20"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
   logout: '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M15 8l4 4-4 4M19 12H9"/>',
@@ -267,4 +271,10 @@ function popNode(node, anchor, alignRight) {
   let x = alignRight ? r.right - w : r.left; x = Math.max(8, Math.min(x, innerWidth - w - 8));
   m.style.left = x + "px"; m.style.top = r.bottom + 6 + "px";
   _menu = m;
+}
+
+S.counts = { pending_docs: 0, pending_users: 0, my_pending: 0, my_rejected: 0 };
+function apprBadge(d) {
+  if (!d.appr) return "";
+  return h("span", { class: "badge", style: { "--c": d.appr === "pending" ? "#F28C1E" : "#D32F2F" }, title: d.appr_note || "" }, d.appr === "pending" ? "WAITING" : "REJECTED");
 }

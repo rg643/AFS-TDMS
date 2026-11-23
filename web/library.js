@@ -2,7 +2,7 @@
 "use strict";
 const L = { root: null };           // references to the library's parts
 const COLS = [["type", "Type", "type"], ["status", "Status", "status"], ["cat", "Folder", "cat"], ["size", "Size", "size"], ["by", "Added by", "by"], ["added", "Added", "added"]];
-const VIEWS = [["folder", "Selected folder"], ["all", "All documents"], ["favorites", "My favorites"], ["mine", "Added by me"], ["recent", "Recent (last 30 days)"], ["bin", "Recycle bin"]];
+const VIEWS = [["uploads", "My uploads"], ["folder", "Selected folder"], ["all", "All documents"], ["favorites", "My favorites"], ["mine", "Added by me"], ["recent", "Recent (last 30 days)"], ["bin", "Recycle bin"]];
 const ORDERS = [["My order (use up / down)", "pos", false], ["Name A-Z", "title", false], ["Name Z-A", "title", true], ["Newest first", "added", true], ["Oldest first", "added", false],
   ["Largest first", "size", true], ["Type", "type", false], ["Status", "status", false]];
 const cols = () => (S.prefs.cols || "type,status,cat,size,by,added").split(",").filter(c => COLS.some(x => x[0] === c));
@@ -43,7 +43,8 @@ function renderLibrary(root) {
   L.folders = h("div", { class: "card folders" + (hidden ? " hidden" : "") });
   L.tree = h("div", { class: "tree" });
   L.bin = h("div", { class: "binrow" + (isViewer() ? " hidden" : ""), onclick: () => setView("bin") }, h("img", { src: "/icon/trash/t.png?s=44&c=E0713F", width: 22, height: 22 }), h("span", {}, "Recycle bin"), h("span", { class: "cnt" }));
-  const manage = isAdmin() ? h("button", { class: "btn", onclick: e => { e.stopPropagation(); popMenu(folderMenuItems(), 0, 0, e.currentTarget); } }, "Manage \u25BE") : null;
+  const manage = isAdmin() ? h("button", { class: "btn", onclick: e => { e.stopPropagation(); popMenu(folderMenuItems(), 0, 0, e.currentTarget); } }, "Manage \u25BE") :
+    canWrite() ? iconBtn("folderplus", "New", e => popMenu(userFolderMenu(), 0, 0, e.currentTarget), "", false, "Create a folder or a subfolder") : null;
   add(L.folders, h("div", { class: "head" }, h("b", {}, "Folders"), manage), L.tree, L.bin);
   L.tbar = h("div", { class: "toolbar" });
   L.crumb = h("div", { class: "crumb" });
@@ -52,7 +53,8 @@ function renderLibrary(root) {
   L.table = h("div", { class: "tablewrap" });
   L.preview = h("div", { class: "preview hidden" });
   L.det = h("div", { class: "detline" });
-  L.main = h("div", { class: "card main" }, L.tbar, h("div", { class: "crumbrow" }, L.crumb, L.count, L.chips), h("div", { class: "split" }, L.table, L.preview), L.det);
+  L.banner = h("div", {});
+  L.main = h("div", { class: "card main" }, L.tbar, L.banner, h("div", { class: "crumbrow" }, L.crumb, L.count, L.chips), h("div", { class: "split" }, L.table, L.preview), L.det);
   add(root, h("div", { class: "lib" }, L.folders, L.main));
   setupDrop(L.main);
   renderChips();
@@ -118,6 +120,11 @@ function setView(v) {
   renderTree(); renderToolbar();
   loadDocs().then(renderList).catch(toastErr);
 }
+function userFolderMenu() {
+  const f = S.cat && S.view === "folder" ? folderById(S.cat) : null;
+  return [{ label: "New folder...", fn: () => newFolder(null) }, { label: "New subfolder...  (inside the selected one)", dis: !f, fn: () => newFolder(f.id) }];
+}
+function showMyUploads() { clearSearch(); S.view = "uploads"; S.cat = null; S.sel.clear(); if (S.route === "library" && L.root && L.root.isConnected) setView("uploads"); else go("library"); }
 function folderMenuItems() {
   const f = S.cat && S.view === "folder" ? folderById(S.cat) : null;
   return [{ label: "New folder...", fn: () => newFolder(null) }, { label: "New subfolder...  (inside the selected one)", dis: !f, fn: () => newFolder(f.id) }, { sep: 1 },
@@ -179,6 +186,8 @@ function renderToolbar() {
   if (!w) {
     add(L.tbar, iconBtn("open", "Open", () => selIds().forEach(openDoc), "navy", !any, "Open in a tab"), iconBtn("star", "", () => favSel(), "", !any, "Favorite on / off"), iconBtn("download", "Download", downloadSel, "", !any, "Download the selected documents"),
       iconBtn("checkall", "", selectAll, "", false, "Select all   (Ctrl+A)"), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More"));
+  } else if (S.view === "uploads") {
+    add(L.tbar, iconBtn("open", "Open", () => selIds().forEach(openDoc), "navy", !any, "Open in a tab"), iconBtn("checkall", "", selectAll, "", false, "Select all"), iconBtn("trash", "Cancel upload", () => deleteSel(false), "dangerline", !any, "Remove this upload"));
   } else if (bin) {
     add(L.tbar, iconBtn("restore", "Restore", restoreSel, "navy", !any), iconBtn("checkall", "", selectAll, "", false, "Select all"), iconBtn("trash", "Delete forever", () => deleteSel(true), "dangerline", !any), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More"));
   } else {
@@ -190,12 +199,12 @@ function renderToolbar() {
 }
 function addItems() {
   const items = [{ label: "Upload files...", fn: () => pickFiles(false) }, { label: "Upload a folder with its files...", fn: () => pickFiles(true) }, { label: "Add a web link...", fn: addLink }];
-  if (isAdmin()) items.push({ sep: 1 }, { label: "New empty folder...", fn: () => newFolder(null) }, { label: "New empty subfolder...", dis: !(S.view === "folder" && S.cat), fn: () => newFolder(S.cat) });
+  if (canWrite()) items.push({ sep: 1 }, { label: "New folder...", fn: () => newFolder(null) }, { label: "New subfolder...", dis: !(S.view === "folder" && S.cat), fn: () => newFolder(S.cat) });
   return items;
 }
 function viewMenuItems() {
   const items = [{ hd: "SHOW" }];
-  for (const [v, t] of VIEWS) if (!(isViewer() && v === "bin")) items.push({ label: t, check: S.view === v, fn: () => setView(v) });
+  for (const [v, t] of VIEWS) if (!(isViewer() && v === "bin") && !(v === "uploads" && S.me.role !== "user")) items.push({ label: t + (v === "uploads" && (S.counts.my_pending + S.counts.my_rejected) ? `   (${S.counts.my_pending + S.counts.my_rejected})` : ""), check: S.view === v, fn: () => setView(v) });
   items.push({ sep: 1 }, { hd: "ORDER BY" });
   for (const [t, k, d] of ORDERS) items.push({ label: t, check: S.order === k && S.desc === d, fn: () => { S.order = k; S.desc = d; savePrefs({ order_key: k, order_desc: d ? "1" : "0" }); loadDocs().then(renderList).catch(toastErr); } });
   items.push({ sep: 1 }, { hd: "COLUMNS" });
@@ -232,8 +241,18 @@ function renderCrumb() {
 }
 
 /* ---------- list ---------- */
+function renderBanner() {
+  clear(L.banner);
+  if (S.view === "uploads") return;
+  const c = S.counts, bar = (kind, icon, text, label, fn) => L.banner.appendChild(h("div", { class: "banner " + kind }, svgIcon(icon, 18), h("span", { class: "grow" }, text), h("button", { class: "btn", onclick: fn }, label)));
+  if (isAdmin() && c.pending_docs) bar("warn", "inbox", `${c.pending_docs} document(s) added by users are waiting for your approval.`, "Review now", () => go("approvals"));
+  else if (S.me.role === "user") {
+    if (c.my_pending) bar("warn", "clock", `${c.my_pending} of your uploads are waiting for admin approval. Others will see them after it is approved.`, "View my uploads", showMyUploads);
+    if (c.my_rejected) bar("bad", "warn", `${c.my_rejected} of your uploads were rejected.`, "See why", showMyUploads);
+  }
+}
 function renderList() {
-  renderCrumb(); renderChips();
+  renderBanner(); renderCrumb(); renderChips();
   const c = cols(), bin = S.view === "bin";
   L.count.textContent = S.total > S.docs.length ? `${S.docs.length} of ${S.total} document(s)` : `${S.total} document(s)`;
   clear(L.table);
@@ -255,7 +274,7 @@ function renderList() {
       h("td", { class: "ck" }, h("input", { type: "checkbox", checked: S.sel.has(d.id), onclick: e => { e.stopPropagation(); toggleSel(d.id); } })),
       h("td", { title: d.filename }, h("div", { class: "nm2" }, fileIcon(d.type, compact() ? 18 : 22), h("span", {}, d.fav ? h("span", { class: "star" }, "\u2605 ") : "", d.title, d.ver > 1 ? h("span", { class: "ver" }, "v" + d.ver) : ""))));
     for (const [k] of COLS.filter(x => c.includes(x[0]))) {
-      const v = { type: d.type_label, status: statusBadge(d.status), cat: d.cat, size: fmtSize(d.size), by: d.who, added: fmtDate(bin ? d.deleted_at : d.created) }[k];
+      const v = { type: d.type_label, status: d.appr ? apprBadge(d) : statusBadge(d.status), cat: d.cat, size: fmtSize(d.size), by: d.who, added: fmtDate(bin ? d.deleted_at : d.created) }[k];
       tr.appendChild(h("td", { class: "c-" + k }, v));
     }
     body.appendChild(tr);
@@ -295,6 +314,7 @@ function updateDetails() {
   if (ds.length > 1) { L.det.textContent = `${ds.length} documents selected  |  ${fmtSize(ds.reduce((a, d) => a + d.size, 0))}`; return; }
   if (!ds.length) { L.det.textContent = ""; return; }
   const d = ds[0], bits = [d.title, d.type_label, `version ${d.ver}`, fmtSize(d.size), d.cat, `${d.who}, ${fmtDate(d.created)}`];
+  if (d.appr === "pending") bits.push("waiting for admin approval"); if (d.appr === "rejected") bits.push("rejected: " + (d.appr_note || "no reason given"));
   if (d.status) bits.push(d.status); if (d.review) bits.push("review " + d.review); if (d.tags) bits.push("tags: " + d.tags); if (d.descr) bits.push(d.descr);
   L.det.textContent = bits.join("   |   ");
 }
@@ -320,7 +340,8 @@ async function moveSel(delta) {
 }
 async function deleteSel(forever) {
   const ds = selDocs(); if (!ds.length) return;
-  const ok = await confirmDlg(forever ? "Delete forever" : "Move to Recycle bin", forever ? `Delete ${ds.length} document(s) forever?\nThis cannot be undone.` : `Move ${ds.length} document(s) to the Recycle bin?\nYou can restore them from there.`, forever ? "Delete forever" : "Move to Recycle bin", "danger");
+  const mine = S.view === "uploads";
+  const ok = await confirmDlg(mine ? "Cancel upload" : forever ? "Delete forever" : "Move to Recycle bin", mine ? `Cancel ${ds.length} upload(s)?\nThe files will be removed.` : forever ? `Delete ${ds.length} document(s) forever?\nThis cannot be undone.` : `Move ${ds.length} document(s) to the Recycle bin?\nYou can restore them from there.`, mine ? "Cancel upload" : forever ? "Delete forever" : "Move to Recycle bin", "danger");
   if (!ok) return;
   try { const r = await post("/api/docs/delete", { ids: selIds(), forever }); S.sel.clear(); closeTabsFor(ds.map(d => d.id)); await refreshLibrary(); toast(r.skipped ? `${r.done} done, ${r.skipped} skipped (only an admin or the person who added a document can remove it).` : forever ? "Deleted." : "Moved to the Recycle bin.", r.skipped ? "" : "ok"); } catch (e) { toastErr(e); }
 }
@@ -473,13 +494,13 @@ function askConflict(name) {
     const all = h("input", { type: "checkbox" }); let done = false;
     const pick = mode => ({ text: { version: "Save as new version", rename: "Keep both", skip: "Skip" }[mode], kind: mode === "version" ? "primary" : "", fn: () => { done = true; res({ mode, all: all.checked }); } });
     dialog({ title: "A document with this name exists", width: 520, onclose: () => { if (!done) res({ mode: "skip", all: false }); },
-      body: [h("p", {}, `"${name}" is already in this folder.`), h("label", { class: "sw" }, all, "Do the same for the other files that already exist")], buttons: [pick("skip"), pick("rename"), pick("version")] });
+      body: [h("p", {}, `"${name}" is already in this folder.`), h("label", { class: "sw" }, all, "Do the same for the other files that already exist")], buttons: [pick("skip"), pick("rename"), ...(isAdmin() ? [pick("version")] : [])] });
   });
 }
 async function startUpload(items, cat) {
   const max = items.length; if (!max) return;
   upPanel();
-  let ok = 0, fail = 0, skipped = 0, sticky = null;
+  let ok = 0, fail = 0, skipped = 0, sticky = null, pend = 0;
   for (const it of items) {
     const row = h("div", { class: "u" }, h("div", {}, (it.rel || it.file.name)), h("div", { class: "bar" }, h("i")));
     Up.list.appendChild(row);
@@ -491,10 +512,11 @@ async function startUpload(items, cat) {
       if (choice.mode === "skip") { skipped++; row.firstChild.textContent += "  (skipped)"; bar.style.width = "100%"; continue; }
       r = await sendFile(cat, it, choice.mode, set, st);
     }
-    if (r.status === 200) { ok++; bar.style.width = "100%"; bar.style.background = "#1D8348"; }
+    if (r.status === 200) { ok++; if (r.json && r.json.pending) pend++; bar.style.width = "100%"; bar.style.background = "#1D8348"; }
     else { fail++; bar.style.width = "100%"; bar.style.background = "#D32F2F"; row.appendChild(h("div", { style: { color: "#D32F2F" } }, (r.json && r.json.error) || "Failed")); }
   }
-  toast(`${ok} uploaded${skipped ? `, ${skipped} skipped` : ""}${fail ? `, ${fail} failed` : ""}.`, fail ? "err" : "ok");
+  toast(`${ok} uploaded${pend ? `  -  ${pend} waiting for admin approval` : ""}${skipped ? `, ${skipped} skipped` : ""}${fail ? `, ${fail} failed` : ""}.`, fail ? "err" : "ok");
+  refreshCounts();
   setTimeout(() => { if (Up.box) Up.box.remove(); }, fail ? 15000 : 2500);
   await refreshLibrary();
 }

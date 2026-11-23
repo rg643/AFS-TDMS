@@ -1,6 +1,6 @@
 /* TDMS web - shell, login, router, live updates */
 "use strict";
-const ROUTES_ADMIN = new Set(["users", "activity", "admin"]);
+const ROUTES_ADMIN = new Set(["approvals", "users", "activity", "admin"]);
 
 function go(r) { if (location.hash === "#/" + r) route(); else location.hash = "#/" + r; }
 window.addEventListener("hashchange", () => { if (S.me) route(); });
@@ -75,10 +75,10 @@ function recover() {
 /* ---------- shell ---------- */
 async function start(me) {
   S.me = me.user; S.prefs = me.prefs; applyBrand(me.brand); S.types = me.types; S.statuses = me.statuses; S.statusColors = me.status_colors; S.chips = me.chips; S.questions = me.questions; S.exactOk = me.exact_ok; S.mustChange = me.must_change;
-  S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = []; S.prev = null;
+  S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = []; S.prev = null; S.countsSeen = false; S.counts = { pending_docs: 0, pending_users: 0, my_pending: 0, my_rejected: 0 };
   const t = S.prefs.theme || localStorage.getItem("tdms_theme") || "light"; applyTheme(t); localStorage.setItem("tdms_theme", t);
   renderShell();
-  clearInterval(S.poll); S.poll = setInterval(poll, 15000);
+  clearInterval(S.poll); S.poll = setInterval(poll, 15000); refreshCounts();
   if (S.mustChange) setTimeout(mustChangeDialog, 400);
   else if (me.needs_question) setTimeout(() => toast("Tip: set a security question in My profile so you can recover your password.", ""), 1500);
 }
@@ -90,10 +90,11 @@ function renderShell() {
   const prof = h("button", { class: "profile", title: "Account", onclick: e => { e.stopPropagation(); profilePanel(e.currentTarget); } },
     avatar(S.me.id, 34, "&v=" + (S.me.has_photo ? 1 : 0)), h("span", { class: "pt" }, h("span", { class: "nm" }, S.me.name), roleBadge(S.me.role)), svgIcon("down", 14));
   const top = h("div", { class: "top" }, h("img", { class: "logo", src: "/brand/logo.png?" + (S.logoBust || ""), alt: "", onerror: e => e.target.remove() }), h("div", { class: "sep" }), h("div", {}, h("div", { class: "appname" }, b.app_name), h("div", { class: "apptag" }, b.subtitle)),
-    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), h("button", { class: "btn sq ghost", title: "Dark / light theme", onclick: toggleTheme }, svgIcon(theme() === "dark" ? "sun" : "moon", 18)), prof);
+    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), S.me.role === "viewer" ? null : h("button", { class: "btn sq ghost bell", title: "Notifications", onclick: e => { e.stopPropagation(); bellPanel(e.currentTarget); } }, svgIcon("bell", 18), (S.bellDot = h("span", { class: "bdot hidden" }))),
+    h("button", { class: "btn sq ghost", title: "Dark / light theme", onclick: toggleTheme }, svgIcon(theme() === "dark" ? "sun" : "moon", 18)), prof);
   S.tabBar = h("div", { class: "tabs" }); S.page = h("div", { class: "page" });
   add(app, h("div", { class: "shell" }, top, S.tabBar, S.page));
-  renderTabs(); route();
+  renderTabs(); updateBell(); route();
 }
 /* the account card in the top corner */
 function profilePanel(anchor) {
@@ -110,12 +111,13 @@ function logout() { post("/api/logout").catch(() => { }).finally(() => { S.me = 
 function renderTabs() {
   if (!S.tabBar) return;
   clear(S.tabBar);
-  const mk = (key, label, color, icon, iconW, closable, onclick, badge) => h("button", { class: "tab" + (S.route === key ? " on" : ""), style: { "--c": color }, onclick },
-    h("img", { class: "ic-c", src: icon, alt: "" }), h("img", { class: "ic-w", src: iconW, alt: "" }), h("span", { class: "ttl" }, label), badge ? h("span", { class: "dot" }, badge) : "",
-    closable ? h("span", { class: "x", title: "Close", onclick: e => { e.stopPropagation(); closeTab(closable); } }, "\u00D7") : "");
-  const main = [["library", "Library"], ["dashboard", "Dashboard"]]; if (isAdmin()) main.push(["users", "Users"], ["activity", "Activity"], ["admin", "Admin"]);
-  for (const [k, label] of main) S.tabBar.appendChild(mk(k, label, MAIN_COLORS[k], `/icon/tab/${k}.png?s=36&c=${MAIN_COLORS[k].slice(1)}`, `/icon/tab/${k}.png?s=36&c=FFFFFF`, 0, () => go(k), k === "users" && S.pending ? S.pending : ""));
-  for (const t of S.tabs) S.tabBar.appendChild(mk("doc/" + t.id, t.title, typeColor(t.type), iconUrl(t.type, 18), `/icon/ft/${t.type}.png?s=36&c=${typeColor(t.type).slice(1)}&inv=1`, t.id, () => go("doc/" + t.id)));
+  const mk = (key, label, color, icons, closable, onclick, badge) => h("button", { class: "tab" + (S.route === key ? " on" : ""), style: { "--c": color }, onclick },
+    icons.svg ? h("span", { class: "ic-c" }, svgIcon(icons.svg, 18)) : h("img", { class: "ic-c", src: icons.c, alt: "" }), icons.svg ? h("span", { class: "ic-w" }, svgIcon(icons.svg, 18)) : h("img", { class: "ic-w", src: icons.w, alt: "" }),
+    h("span", { class: "ttl" }, label), badge ? h("span", { class: "dot" }, badge) : "", closable ? h("span", { class: "x", title: "Close", onclick: e => { e.stopPropagation(); closeTab(closable); } }, "\u00D7") : "");
+  const main = [["library", "Library"], ["dashboard", "Dashboard"]]; if (isAdmin()) main.push(["approvals", "Approvals"], ["users", "Users"], ["activity", "Activity"], ["admin", "Admin"]);
+  const badges = { approvals: S.counts.pending_docs, users: S.counts.pending_users };
+  for (const [k, label] of main) S.tabBar.appendChild(mk(k, label, MAIN_COLORS[k], k === "approvals" ? { svg: "inbox" } : { c: `/icon/tab/${k}.png?s=36&c=${MAIN_COLORS[k].slice(1)}`, w: `/icon/tab/${k}.png?s=36&c=FFFFFF` }, 0, () => go(k), badges[k] || ""));
+  for (const t of S.tabs) S.tabBar.appendChild(mk("doc/" + t.id, t.title, typeColor(t.type), { c: iconUrl(t.type, 18), w: `/icon/ft/${t.type}.png?s=36&c=${typeColor(t.type).slice(1)}&inv=1` }, t.id, () => go("doc/" + t.id)));
 }
 function refreshBadges() { renderTabs(); }
 
@@ -130,6 +132,7 @@ function route() {
   S.page.style.overflow = r === "library" || r.startsWith("doc/") ? "hidden" : "auto";
   if (r === "library") renderLibrary(S.page);
   else if (r === "dashboard") renderDashboard(S.page);
+  else if (r === "approvals") renderApprovals(S.page);
   else if (r === "users") renderUsers(S.page);
   else if (r === "activity") renderActivity(S.page);
   else if (r === "admin") renderAdmin(S.page);
@@ -142,16 +145,17 @@ async function poll() {
   if (!S.me || document.hidden) return;
   let c; try { c = await api("/api/changes", { quiet: true }); } catch (e) { return; }
   const s = JSON.stringify([c.docs, c.logs]);
-  if (S.pending !== c.pending) { S.pending = c.pending; renderTabs(); }
+  applyCounts(c, true);
   if (S.lastStamp === undefined) { S.lastStamp = s; return; }
   if (s === S.lastStamp) return;
   S.lastStamp = s;
   if (S.route === "library" && L.root && L.root.isConnected && !document.querySelector(".overlay")) { await refreshLibrary(); }
   else if (S.route === "dashboard" && !document.querySelector(".overlay")) renderDashboard(S.page);
+  else if (S.route === "approvals" && !document.querySelector(".overlay")) renderApprovals(S.page);
 }
 function helpDialog() {
   const rows = [["/", "Search all documents"], ["Ctrl + A", "Select all documents"], ["Delete", "Move the selected documents to the Recycle bin"], ["F2", "Rename the selected document"], ["Enter", "Open the selected documents in tabs"], ["Alt + Up / Down", "Move documents up / down in the folder"],
-    ["Shift + click", "Select a range"], ["Ctrl + click", "Add one to the selection"], ["Drag files in", "Drop files or a whole folder on the list to upload"], ["Right-click", "More actions on a document or a folder"], ["View > Preview panel", "Thumbnail and facts of the selected document"], ["Details", "Set a status and a review date; the Dashboard reminds you"]];
+    ["Shift + click", "Select a range"], ["Ctrl + click", "Add one to the selection"], ["Drag files in", "Drop files or a whole folder on the list to upload"], ["Right-click", "More actions on a document or a folder"], ["View > Preview panel", "Thumbnail and facts of the selected document"], ["Details", "Set a status and a review date; the Dashboard reminds you"], ["Approval", "Documents you add wait for an admin; see them under View > My uploads"], ["New folder", "Users can create folders and subfolders; admins also rename, move and delete them"]];
   dialog({ title: "Shortcuts and tips", width: 640, body: h("table", { class: "mini" }, h("tbody", {}, ...rows.map(([k, t]) => h("tr", { style: { cursor: "default" } }, h("td", {}, h("b", { style: { color: "var(--blue)" } }, k)), h("td", {}, t))))) });
 }
 document.addEventListener("keydown", e => {
@@ -164,3 +168,35 @@ document.addEventListener("keydown", e => {
   try { start(await api("/api/me", { quiet: true })); }
   catch (e) { showLogin(); }
 })();
+
+/* ---------- numbers behind the tab badges, the bell and the banners ---------- */
+function applyCounts(c, notify) {
+  const old = S.counts;
+  S.counts = { pending_docs: c.pending_docs || 0, pending_users: c.pending || 0, my_pending: c.my_pending || 0, my_rejected: c.my_rejected || 0 };
+  if (notify && S.me && S.me.role === "user" && S.countsSeen) {
+    if (S.counts.my_rejected > old.my_rejected) toast("One of your uploads was rejected. Open  View > My uploads  to see why.", "err");
+    else if (S.counts.my_pending < old.my_pending) toast("Good news: an upload of yours was approved. It is now in the library.", "ok");
+  }
+  S.countsSeen = true;
+  renderTabs(); updateBell();
+  if (S.route === "library" && L.root && L.root.isConnected) renderBanner();
+}
+async function refreshCounts() { if (!S.me) return; try { applyCounts(await api("/api/changes", { quiet: true }), false); } catch (e) { /* ignore */ } }
+function updateBell() {
+  if (!S.bellDot) return;
+  const c = S.counts, n = isAdmin() ? c.pending_docs + c.pending_users : c.my_pending + c.my_rejected;
+  S.bellDot.textContent = n > 9 ? "9+" : String(n); S.bellDot.classList.toggle("hidden", !n);
+}
+function bellPanel(anchor) {
+  const c = S.counts, rows = [];
+  if (isAdmin()) {
+    if (c.pending_docs) rows.push(["inbox", `${c.pending_docs} document(s) waiting for approval`, "Review uploads", () => go("approvals")]);
+    if (c.pending_users) rows.push(["users", `${c.pending_users} account(s) waiting for approval`, "Review accounts", () => go("users")]);
+  } else {
+    if (c.my_rejected) rows.push(["warn", `${c.my_rejected} of your uploads were rejected`, "See why", showMyUploads]);
+    if (c.my_pending) rows.push(["clock", `${c.my_pending} of your uploads are waiting for approval`, "View my uploads", showMyUploads]);
+  }
+  popNode(h("div", { class: "notif" }, h("div", { class: "nf-head" }, "Notifications"),
+    rows.length ? rows.map(([ic, t, lab, fn]) => h("div", { class: "nf-it", onclick: () => { closeMenu(); fn(); } }, h("span", { class: "nf-ic" }, svgIcon(ic, 18)), h("div", {}, h("div", {}, t), h("div", { class: "small", style: { color: "var(--blue)" } }, lab + " \u203A")))) :
+      h("div", { class: "nf-empty" }, svgIcon("check", 22), h("div", {}, "You are all caught up."))), anchor, true);
+}

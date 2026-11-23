@@ -34,7 +34,17 @@ async function renderViewer(root, id) {
     eb.onclick = () => { exact = !exact; eb.textContent = exact ? "Simple view" : "Exact view (PDF)"; clear(body); if (exact) body.appendChild(h("iframe", { src: `/files/${id}/exact.pdf` })); else drawKind(body, r, id); };
     bar.insertBefore(eb, favBtn);
   }
-  clear(root); add(root, h("div", { class: "viewer" }, bar, body));
+  let note = null;
+  if (doc.appr) {
+    const pend = doc.appr === "pending", rejNote = `Rejected: ${doc.appr_note || "no reason given"}`;
+    note = h("div", { class: "banner " + (pend ? "warn" : "bad"), style: { margin: 0 } }, svgIcon(pend ? "clock" : "warn", 18),
+      h("span", { class: "grow" }, isAdmin() ? (pend ? `Added by ${doc.who}. Waiting for your approval - nobody else can see it yet.` : rejNote) : (pend ? "Waiting for admin approval. Only you and the admins can see this document for now." : rejNote)));
+    if (isAdmin()) {
+      note.appendChild(iconBtn("approve", "Approve", async () => { try { await post("/api/approvals/approve", { ids: [id] }); toast("Approved. It is now in the library.", "ok"); refreshCounts(); renderViewer(root, id); } catch (e) { toastErr(e); } }, "primary"));
+      if (pend) note.appendChild(iconBtn("x", "Reject...", () => rejectDialog([id], () => { refreshCounts(); renderViewer(root, id); }), "dangerline"));
+    }
+  }
+  clear(root); add(root, h("div", { class: "viewer" }, bar, note, body));
   drawKind(body, r, id);
 }
 function drawKind(body, r, id) {
@@ -107,8 +117,8 @@ function textEditor(body, r, id) {
 }
 
 /* ================================================================ dashboard ================================================================ */
-const TILE_ICONS = { docs: "file", size: "db", folders: "folder", week: "calendar", mine: "user", fav: "star", versions: "layers", trash: "trash", users: "users", pending: "clock" };
-const TILE_COLORS = { docs: "var(--red)", size: "#2E6DB4", folders: "#D4A017", week: "#1D8348", mine: "#8E44AD", fav: "#F2B01E", versions: "#0097A7", trash: "#E0713F", users: "#3F51B5", pending: "#F28C1E" };
+const TILE_ICONS = { uploads: "inbox", docs: "file", size: "db", folders: "folder", week: "calendar", mine: "user", fav: "star", versions: "layers", trash: "trash", users: "users", pending: "clock" };
+const TILE_COLORS = { uploads: "#00897B", docs: "var(--red)", size: "#2E6DB4", folders: "#D4A017", week: "#1D8348", mine: "#8E44AD", fav: "#F2B01E", versions: "#0097A7", trash: "#E0713F", users: "#3F51B5", pending: "#F28C1E" };
 let _dash = null;
 async function renderDashboard(root) {
   clear(root);
@@ -198,9 +208,10 @@ async function renderAdmin(root) {
   const f = { app_name: inp("app_name"), short_name: inp("short_name"), company: inp("company"), subtitle: inp("subtitle"), tagline: inp("tagline"), brand_red: col("brand_red"), brand_blue: col("brand_blue"), brand_navy: col("brand_navy"),
     default_role: select([["user", "User - can add and edit"], ["viewer", "Viewer - read and download only"]], s.default_role || "user"), login_bg: select([["ocean", "Ocean"], ["midnight", "Midnight"], ["sunrise", "Sunrise"], ["slate", "Slate"]], s.login_bg), email_domain: inp("email_domain", "addverb.com"), min_password: inp("min_password"), max_mb: inp("max_mb", "0 = no limit"), trash_days: inp("trash_days") };
   const sw = (k, label) => { const c = h("input", { type: "checkbox", checked: s[k] === "1" }); c.get = () => (c.checked ? "1" : "0"); return [h("label", { class: "sw" }, c, label), c]; };
+  const cUpl = h("input", { type: "checkbox", checked: s.upload_approval !== "0" });
   const [swSign, cSign] = sw("allow_signup", "Allow people to create their own account"), [swAppr, cAppr] = sw("require_approval", "New accounts must be approved by an admin");
   const save = async () => {
-    const body = {}; for (const [k, v] of Object.entries(f)) body[k] = v.get ? v.get() : v.value; body.allow_signup = cSign.get(); body.require_approval = cAppr.get();
+    const body = {}; for (const [k, v] of Object.entries(f)) body[k] = v.get ? v.get() : v.value; body.allow_signup = cSign.get(); body.require_approval = cAppr.get(); body.upload_approval = cUpl.checked ? "1" : "0";
     try { const r = await post("/api/admin/settings", body); applyBrand(r.brand); renderShell(); toast("Settings saved.", "ok"); } catch (e) { toastErr(e); }
   };
   const logoIn = h("input", { type: "file", accept: "image/*", style: { display: "none" }, onchange: async () => { const fd = new FormData(); fd.append("file", logoIn.files[0]); try { await api("/api/admin/logo", { method: "POST", form: fd }); toast("Logo changed.", "ok"); S.logoBust = Date.now(); renderShell(); } catch (e) { toastErr(e); } } });
@@ -208,7 +219,7 @@ async function renderAdmin(root) {
     h("div", { class: "card" }, h("h3", {}, "Branding"), field("APPLICATION NAME", f.app_name), h("div", { class: "form2" }, field("SHORT NAME", f.short_name), field("COMPANY", f.company)), field("SUBTITLE", f.subtitle), field("TAGLINE", f.tagline),
       h("div", { class: "form2" }, field("ACCENT COLOUR", f.brand_red), field("BLUE", f.brand_blue)), h("div", { class: "form2" }, field("NAVY (table headings)", f.brand_navy), field("LOGIN BACKGROUND", f.login_bg)),
       h("div", { class: "row", style: { marginTop: "14px" } }, h("button", { class: "btn", onclick: () => logoIn.click() }, "Change logo..."), h("button", { class: "btn ghost", onclick: async () => { await api("/api/admin/logo", { method: "DELETE" }); toast("Logo reset.", "ok"); S.logoBust = Date.now(); renderShell(); } }, "Use the default logo"), logoIn)),
-    h("div", { class: "card" }, h("h3", {}, "Rules"), swSign, swAppr, field("NEW ACCOUNTS START AS", f.default_role, "You can still choose the role when you approve an account."), field("ONLY THIS EMAIL DOMAIN CAN SIGN UP", f.email_domain, "Leave empty to allow any domain"), h("div", { class: "form2" }, field("MINIMUM PASSWORD LENGTH", f.min_password), field("MAX FILE SIZE (MB)", f.max_mb)), field("KEEP DELETED DOCUMENTS (DAYS)", f.trash_days))),
+    h("div", { class: "card" }, h("h3", {}, "Rules"), swSign, swAppr, h("label", { class: "sw" }, cUpl, "Documents added by users must be approved by an admin before others see them"), field("NEW ACCOUNTS START AS", f.default_role, "You can still choose the role when you approve an account."), field("ONLY THIS EMAIL DOMAIN CAN SIGN UP", f.email_domain, "Leave empty to allow any domain"), h("div", { class: "form2" }, field("MINIMUM PASSWORD LENGTH", f.min_password), field("MAX FILE SIZE (MB)", f.max_mb)), field("KEEP DELETED DOCUMENTS (DAYS)", f.trash_days))),
     h("div", { class: "row", style: { margin: "0 0 12px" } }, h("button", { class: "btn primary big", onclick: save }, "Save settings")),
     h("div", { class: "grid2e" },
       h("div", { class: "card" }, h("h3", {}, "Share with your team"), h("p", { class: "muted" }, "Team members open one of these addresses in their browser (same network or VPN):"), ...info.urls.map(u => h("div", {}, h("span", { class: "url" }, u))), info.urls.length ? "" : h("div", { class: "muted" }, "No network address found."),
@@ -255,10 +266,39 @@ function mustChangeDialog() {
 /* choose what the new person can do, then approve */
 function approveDialog(u, done) {
   let role = S.brand.default_role || "user";
-  const opts = [["viewer", "Viewer", "Can see, read and download documents. Cannot add, change or delete anything."], ["user", "User", "Can also add documents, and edit or delete the ones they added."], ["admin", "Administrator", "Full control: users, folders, settings and all documents."]];
+  const opts = [["viewer", "Viewer", "Can see, read and download documents. Cannot add, change or delete anything."], ["user", "User", "Can add documents (an administrator approves them first), create folders, and edit or delete their own."], ["admin", "Administrator", "Full control: users, folders, settings and all documents."]];
   const box = h("div", { class: "roleopts" });
   const draw = () => { clear(box); opts.forEach(([v, t, d]) => box.appendChild(h("label", { class: "roleopt" + (v === role ? " on" : ""), onclick: () => { role = v; draw(); } }, h("input", { type: "radio", name: "role", checked: v === role }), h("div", {}, h("div", { class: "row" }, h("b", {}, t), roleBadge(v)), h("div", { class: "muted small" }, d))))); };
   draw();
   dialog({ title: `Approve ${u.name}`, width: 520, body: [h("p", { class: "muted", style: { margin: "4px 0 10px" } }, [u.email || u.username, u.emp_id ? "#" + u.emp_id : "", u.dept].filter(Boolean).join("   \u00B7   ")), h("label", { class: "lbl" }, "What can this account do?"), box],
     buttons: [{ text: "Cancel" }, { text: "Approve", kind: "primary", fn: async () => { await post(`/api/users/${u.id}/approve`, { role }); toast(`${u.name} approved as ${role}.`, "ok"); done && done(); } }] });
+}
+
+/* ================================================================ approvals (admin) ================================================================ */
+function rejectDialog(ids, done) {
+  const why = h("textarea", { class: "inp", rows: 3, placeholder: "Why is it rejected? The person will see this." });
+  dialog({ title: `Reject ${ids.length} document(s)`, width: 480, body: [field("REASON", why)], buttons: [{ text: "Cancel" }, { text: "Reject", kind: "danger", fn: async () => { await post("/api/approvals/reject", { ids, reason: why.value }); toast("Rejected. The person can see your reason.", "ok"); done && done(); } }] });
+}
+async function renderApprovals(root, state = "pending") {
+  clear(root);
+  let r; try { r = await api("/api/approvals?state=" + state); } catch (e) { return toastErr(e); }
+  const docs = r.docs, sel = new Set(), again = () => { renderApprovals(root, state); refreshCounts(); };
+  const bulkApprove = iconBtn("approve", "Approve selected", () => approve([...sel]), "primary", true), bulkReject = iconBtn("x", "Reject selected...", () => rejectDialog([...sel], again), "dangerline", true);
+  const paint = () => { bulkApprove.disabled = bulkReject.disabled = !sel.size; if (state !== "pending") bulkReject.classList.add("hidden"); };
+  async function approve(ids) { try { const x = await post("/api/approvals/approve", { ids }); toast(`${x.done} document(s) approved. They are now in the library.`, "ok"); again(); } catch (e) { toastErr(e); } }
+  const rows = docs.map(d => {
+    const cb = h("input", { type: "checkbox", onclick: e => { e.stopPropagation(); if (cb.checked) sel.add(d.id); else sel.delete(d.id); paint(); } });
+    return h("tr", {}, h("td", { style: { width: "34px" } }, cb),
+      h("td", {}, h("a", { class: "row", style: { cursor: "pointer", gap: "10px", textDecoration: "none", color: "var(--ink)" }, onclick: () => openDoc(d) }, fileIcon(d.type, 22), h("b", {}, d.title), h("span", { class: "muted small" }, d.type_label))),
+      h("td", {}, d.cat), h("td", {}, h("span", { class: "row" }, avatar(d.uploader_id, 24), d.who)), h("td", {}, fmtSize(d.size)), h("td", {}, fmtDate(d.created)),
+      state === "rejected" ? h("td", { class: "muted" }, d.appr_note || "-") : null,
+      h("td", { style: { whiteSpace: "nowrap" } }, h("button", { class: "btn", style: { marginRight: "4px" }, onclick: () => openDoc(d) }, "Open"), h("button", { class: "btn primary", style: { marginRight: "4px" }, onclick: () => approve([d.id]) }, "Approve"),
+        state === "pending" ? h("button", { class: "btn dangerline", onclick: () => rejectDialog([d.id], again) }, "Reject...") : ""));
+  });
+  const all = h("input", { type: "checkbox", onclick: e => { sel.clear(); $$("tbody input[type=checkbox]", root).forEach((c, i) => { c.checked = e.target.checked; if (e.target.checked) sel.add(docs[i].id); }); paint(); } });
+  const table = docs.length ? h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, h("th", {}, all), ...["Document", "Folder", "Added by", "Size", "Added", state === "rejected" ? "Reason" : null, ""].filter(x => x !== null).map(x => h("th", {}, x)))), h("tbody", {}, ...rows))) :
+    emptyState("approve", state === "pending" ? "Nothing is waiting for approval" : "No rejected documents", state === "pending" ? "When users add documents they appear here, and nobody else can see them until you approve." : "Rejected documents appear here. You can still approve one later.");
+  add(root, pageHead("Approvals", "Documents added by users stay hidden until you approve them", pills([["pending", "Waiting"], ["rejected", "Rejected"]], state, v => renderApprovals(root, v)),
+    state === "pending" && docs.length ? iconBtn("approve", "Approve all", async () => { if (await confirmDlg("Approve all", `Approve all ${docs.length} document(s)?`, "Approve all")) approve(docs.map(d => d.id)); }, "") : null, bulkApprove, bulkReject), h("div", { class: "card flush" }, table));
+  paint();
 }
