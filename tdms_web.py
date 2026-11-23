@@ -6,6 +6,7 @@ Open:   http://<this-computer's-IP>:8080   from any computer on the network
 Needs:  pip install flask pillow          (optional: waitress = faster server, pymupdf = PDF thumbnails)
 Data:   the folder AFS_TDMS_Data next to this file (same data as the desktop program)
 """
+import base64
 import datetime as dt
 import io
 import json
@@ -18,11 +19,10 @@ import sys
 import tempfile
 import threading
 import time
-import requests
-import base64
 from functools import wraps
 from pathlib import Path
 
+import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, session
 
 import tdms_core as core
@@ -36,20 +36,18 @@ except Exception:
 BASE = core.BASE
 WEB = BASE / "web"
 CONFIG_FILE = core.ROOT / "web_config.json"
-VIEW_MAP = {"folder": "Selected folder", "all": "All documents", "favorites": "My favorites", "mine": "Added by me", "recent": "Recent (last 30 days)", "bin": "Recycle bin"}
+VIEW_MAP = {"uploads": "My uploads", "folder": "Selected folder", "all": "All documents", "favorites": "My favorites", "mine": "Added by me", "recent": "Recent (last 30 days)", "bin": "Recycle bin"}
 SORT_KEYS = {"pos", "title", "type", "size", "added", "by", "cat", "status"}
 PREF_KEYS = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 INLINE_OK = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
              ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
              ".aac": "audio/aac", ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".json": "text/plain; charset=utf-8",
              ".xml": "text/plain; charset=utf-8", ".csv": "text/plain; charset=utf-8"}
-
-# settings (created in create_app)
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+S = None                       # settings (created in create_app)
 
-S = None
-
-FLOW_URL = "https://default9d0bf1ed9dbb4ad2b95eefaf178699.37.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/29/workflows/81de89cdb6e546d9b4f348d7d655f3aa/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ysPgU2hmogGpbmARhzS4B_IfhZkTNPFaqa-jvAU34HU"
+# ---- SharePoint (Power Automate flow): a copy of every approved document is sent to SharePoint
+FLOW_URL = os.environ.get("TDMS_SHAREPOINT_FLOW_URL") or "https://default9d0bf1ed9dbb4ad2b95eefaf178699.37.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/29/workflows/81de89cdb6e546d9b4f348d7d655f3aa/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ysPgU2hmogGpbmARhzS4B_IfhZkTNPFaqa-jvAU34HU"
 
 def upload_to_sharepoint(path, folder_path):
     with open(path, "rb") as f:
@@ -63,13 +61,17 @@ def upload_to_sharepoint(path, folder_path):
 
     r = requests.post(FLOW_URL, json=payload, timeout=300)
 
-    if r.status_code != 200:
-        raise Exception("SharePoint upload failed")
+    if r.status_code not in (200, 201, 202):
+        raise Exception(f"SharePoint upload failed (HTTP {r.status_code}): {r.text[:200]}")
 
-    return r.json()
+    try:
+        return r.json()
+    except ValueError:
+        return {}
 
 _FAILS, _FLOCK = {}, threading.Lock()
 _OFFICE_LOCK = threading.Lock()
+
 
 class ApiError(Exception):
     def __init__(self, msg, code=400):
@@ -175,7 +177,7 @@ def is_admin(u):
 def brand():
     return {"app_name": S.get("app_name"), "short_name": S.get("short_name"), "company": S.get("company"), "subtitle": S.get("subtitle"), "tagline": S.get("tagline"),
             "red": S.get("brand_red"), "blue": S.get("brand_blue"), "navy": S.get("brand_navy"), "login_bg": S.get("login_bg") or "ocean", "allow_signup": S.flag("allow_signup"),
-            "email_domain": S.get("email_domain"), "min_password": int(S.get("min_password") or 8), "require_approval": S.flag("require_approval"), "default_role": S.get("default_role") if S.get("default_role") in ("user", "viewer") else "user"}
+            "email_domain": S.get("email_domain"), "min_password": int(S.get("min_password") or 8), "require_approval": S.flag("require_approval"), "default_role": S.get("default_role") if S.get("default_role") in ("user", "viewer") else "user", "upload_approval": S.get("upload_approval") != "0"}
 
 
 def type_table():
@@ -190,11 +192,20 @@ def me_payload(u):
             "status_colors": core.STATUS_COLORS, "chips": list(core.TYPE_CHIPS), "orders": {k: list(v) for k, v in core.ORDERS.items()}, "questions": core.QUESTIONS}
 
 
+def needs_approval(u):
+    """uploads by normal users wait for an administrator (can be switched off in Admin > Rules)"""
+    return u["role"] == "user" and S.get("upload_approval") != "0"
+
+
 def get_doc_or_404(did, u, allow_deleted=False):
     d = core.get_doc(did)
-    if not d or (d["deleted"] and not allow_deleted):
+    if not d:
         raise ApiError("Document not found.", 404)
-    if d["deleted"] and not (is_admin(u) or d["uploader_id"] == u["id"]):
+    st = d["deleted"] or 0
+    if st in (2, 3):                                  # waiting for approval / rejected: only the person who added it, and admins
+        if not (is_admin(u) or d["uploader_id"] == u["id"]):
+            raise ApiError("Document not found.", 404)
+    elif st == 1 and (not allow_deleted or not (is_admin(u) or d["uploader_id"] == u["id"])):
         raise ApiError("Document not found.", 404)
     return d
 
@@ -616,7 +627,7 @@ def create_app():
         return r[0]
 
     @app.post("/api/folders")
-    @api(admin=True)
+    @api(write=True)
     def folders_add(u):
         d = body()
         name, parent = str(d.get("name", "")).strip(), d.get("parent_id") or None
@@ -624,6 +635,8 @@ def create_app():
             raise ApiError("Type a folder name.")
         if parent:
             need_cat(int(parent))
+        if core.q("select 1 from categories where parent_id is ? and lower(name)=?", (parent, name.lower())):
+            raise ApiError("A folder with that name already exists here.")
         i = core.ex("insert into categories(name,parent_id,sort) values(?,?,(select coalesce(max(sort),0)+1 from categories where parent_id is ?))", (name, parent, parent))[0]
         core.log(u["username"], "add folder (web)", name)
         return jsonify({"id": i})
@@ -677,6 +690,12 @@ def create_app():
         view = VIEW_MAP.get(a.get("view", "folder"), VIEW_MAP["folder"])
         if view == "Recycle bin" and is_viewer(u):
             raise ApiError("Viewer accounts do not have a Recycle bin.", 403)
+        if view == "My uploads":          # my documents that wait for approval, or were rejected
+            rows = core.q(core.DOC_SQL + " where d.uploader_id=? and d.deleted in (2,3) order by d.id desc", (u["id"], u["id"]))
+            t_ = a.get("q", "").strip().lower()
+            if t_:
+                rows = [r for r in rows if t_ in f"{r['title']} {r['filename']}".lower()]
+            return jsonify({"docs": [dd(r, u) for r in rows], "total": len(rows), "stamp": list(core.docs_stamp())})
         try:
             cat = int(a.get("cat")) if a.get("cat") else None
         except ValueError:
@@ -723,7 +742,7 @@ def create_app():
         done = skipped = 0
         for i in ids:
             d = core.get_doc(i)
-            if not d or bool(d["deleted"]) != allow_deleted or not (is_admin(u) or d["uploader_id"] == u["id"]):
+            if not d or (d["deleted"] or 0) != (1 if allow_deleted else 0) or not (is_admin(u) or d["uploader_id"] == u["id"]):
                 skipped += 1
                 continue
             fn(d)
@@ -735,12 +754,20 @@ def create_app():
     def docs_delete(u):
         d = body()
         ids = ids_of(d)
+        cancelled = 0
+        for i in list(ids):                      # cancelling an upload that was never approved removes it for good
+            r_ = core.get_doc(i)
+            if r_ and (r_["deleted"] or 0) in (2, 3) and (is_admin(u) or r_["uploader_id"] == u["id"]):
+                core.purge_doc(r_)
+                ids.remove(i)
+                cancelled += 1
         if d.get("forever"):
             res = each_doc(u, ids, core.purge_doc, allow_deleted=True)
             core.log(u["username"], "purge (web)", f"{res['done']} document(s)")
         else:
             res = each_doc(u, ids, lambda x: core.trash_doc(x, u["id"]))
             core.log(u["username"], "delete (web)", f"{res['done']} document(s) to Recycle bin")
+        res["done"] += cancelled
         return jsonify(res)
 
     @app.post("/api/docs/restore")
@@ -759,6 +786,28 @@ def create_app():
         core.log(u["username"], "empty Recycle bin (web)", f"{len(rows)} document(s)")
         return jsonify({"done": len(rows)})
 
+    @app.get("/api/approvals")
+    @api(admin=True)
+    def approvals(u):
+        st = 3 if request.args.get("state") == "rejected" else 2
+        rows = core.q(core.DOC_SQL + " where d.deleted=? order by d.id", (u["id"], st))
+        return jsonify({"docs": [dd(r, u) for r in rows], "pending": core.pending_counts(u["id"])["docs"]})
+
+    @app.post("/api/approvals/approve")
+    @api(admin=True)
+    def approvals_approve(u):
+        n = core.approve_docs(ids_of(body()), u["id"])
+        core.log(u["username"], "approve upload (web)", f"{n} document(s)")
+        return jsonify({"done": n})
+
+    @app.post("/api/approvals/reject")
+    @api(admin=True)
+    def approvals_reject(u):
+        d = body()
+        n = core.reject_docs(ids_of(d), u["id"], str(d.get("reason", "")).strip())
+        core.log(u["username"], "reject upload (web)", f"{n} document(s)")
+        return jsonify({"done": n})
+
     @app.post("/api/docs/move")
     @api(write=True)
     def docs_move(u):
@@ -775,7 +824,8 @@ def create_app():
         d = body()
         on = d.get("on")
         for i in ids_of(d):
-            if not core.get_doc(i):
+            x = core.get_doc(i)
+            if not x or (x["deleted"] or 0) != 0:
                 continue
             has = bool(core.q("select 1 from favorites where user_id=? and doc_id=?", (u["id"], i)))
             if on is None or bool(on) != has:
@@ -808,9 +858,10 @@ def create_app():
             raise ApiError("Type a name.")
         if not re.match(r"^https?://\S+$", url):
             raise ApiError("Type the full address, for example https://www.example.com")
-        p = core.add_link(cat, name, url, u["id"])
-        core.log(u["username"], "add link (web)", name)
-        return jsonify({"ok": True, "file": p.name})
+        pend = needs_approval(u)
+        p = core.add_link(cat, name, url, u["id"], pending=pend)
+        core.log(u["username"], "add link (web)" + (" - waiting for approval" if pend else ""), name)
+        return jsonify({"ok": True, "file": p.name, "pending": bool(pend)})
 
     # ------------------------------------------------------------------ upload and versions
     def max_bytes():
@@ -830,14 +881,17 @@ def create_app():
         rel = [p for p in str(request.form.get("relpath", "")).replace("\\", "/").split("/")[:-1] if p and p not in (".", "..")]
         for part in rel[:12]:
             cat = core.get_or_make_cat(cat, part[:120])
+        pend = needs_approval(u)
+        if pend and request.form.get("mode") == "version":
+            raise ApiError("New versions of a document must be uploaded by an administrator. Upload it as a new document instead.", 403)
         try:
-            did, how = core.add_stream(cat, f.filename, f.stream, u["id"], request.form.get("title") or None, request.form.get("mode") or None, max_bytes(), str(request.form.get("note", ""))[:200])
+            did, how = core.add_stream(cat, f.filename, f.stream, u["id"], request.form.get("title") or None, request.form.get("mode") or None, max_bytes(), str(request.form.get("note", ""))[:200], pending=pend)
         except core.NameConflict as e:
             return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
         except ValueError as e:
             raise ApiError(str(e), 413)
-        core.log(u["username"], f"upload {how} (web)", f.filename)
-        return jsonify({"id": did, "how": how, "cat_id": cat})
+        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), f.filename)
+        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added")})
 
     UID_RE = re.compile(r"^[a-f0-9]{16,40}$")
 
@@ -910,8 +964,11 @@ def create_app():
         name = str(d.get("filename", "")).strip() or "file"
         rd = ChainReader(parts)
         keep = False
+        pend = needs_approval(u)
+        if pend and d.get("mode") == "version":
+            raise ApiError("New versions of a document must be uploaded by an administrator. Upload it as a new document instead.", 403)
         try:
-            did, how = core.add_stream(cat, name, rd, u["id"], d.get("title") or None, d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200])
+            did, how = core.add_stream(cat, name, rd, u["id"], d.get("title") or None, d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200], pending=pend)
         except core.NameConflict as e:
             keep = True
             return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
@@ -921,14 +978,18 @@ def create_app():
             rd.close()
             if not keep:
                 shutil.rmtree(dirp, ignore_errors=True)
-        core.log(u["username"], f"upload {how} (web)", name)
-        return jsonify({"id": did, "how": how, "cat_id": cat})
+        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), name)
+        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added")})
 
     @app.post("/api/docs/<int:did>/version")
     @api(write=True)
     def version_new(u, did):
         d = get_doc_or_404(did, u)
         need_edit(d, u)
+        if (d["deleted"] or 0) != 0:
+            raise ApiError("Wait until this document is approved.", 400)
+        if needs_approval(u):
+            raise ApiError("New versions of a document must be uploaded by an administrator.", 403)
         f = request.files.get("file")
         if not f:
             raise ApiError("Choose the new file.")
@@ -1193,7 +1254,9 @@ def create_app():
     @app.get("/api/changes")
     @api()
     def changes(u):
-        return jsonify({"docs": list(core.docs_stamp()), "logs": core.logs_stamp(), "pending": core.stats(0)["pending"] if is_admin(u) else 0})
+        pc = core.pending_counts(u["id"])
+        return jsonify({"docs": list(core.docs_stamp()), "logs": core.logs_stamp(), "pending": core.stats(0)["pending"] if is_admin(u) else 0,
+                        "pending_docs": pc["docs"] if is_admin(u) else 0, "my_pending": pc["mine_pending"], "my_rejected": pc["mine_rejected"]})
 
     def slim(rows, u, extra=None):
         out = []
@@ -1215,6 +1278,11 @@ def create_app():
                  {"key": "mine", "label": "Added by you", "value": st["mine"], "sub": f"{round(100 * st['mine'] / max(1, st['docs']))}% of all documents"},
                  {"key": "fav", "label": "Favorites", "value": st["fav"], "sub": "quick access"}, {"key": "versions", "label": "Versions kept", "value": ex_["versions"], "sub": "older versions you can restore"},
                  {"key": "trash", "label": "In Recycle bin", "value": st["trash"], "sub": f"removed after {S.get('trash_days')} days"}]
+        pc = core.pending_counts(u["id"])
+        if is_admin(u):
+            tiles += [{"key": "uploads", "label": "Uploads waiting", "value": pc["docs"], "sub": "please review" if pc["docs"] else "all clear"}]
+        elif not is_viewer(u):
+            tiles += [{"key": "uploads", "label": "My uploads waiting", "value": pc["mine_pending"], "sub": f"{pc['mine_rejected']} rejected" if pc["mine_rejected"] else "waiting for an admin"}]
         if is_admin(u):
             tiles += [{"key": "users", "label": "Active users", "value": st["users"], "sub": "can sign in"}, {"key": "pending", "label": "Waiting for approval", "value": st["pending"], "sub": "please review" if st["pending"] else "all clear"}]
         mo = core.most_opened(7)
@@ -1230,7 +1298,7 @@ def create_app():
 
     # ------------------------------------------------------------------ admin
     ADMIN_KEYS = {"app_name", "short_name", "company", "subtitle", "tagline", "brand_red", "brand_blue", "brand_navy", "login_bg", "allow_signup", "require_approval", "email_domain",
-                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role"}
+                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role", "upload_approval"}
 
     @app.get("/api/admin/settings")
     @api(admin=True)
@@ -1249,7 +1317,7 @@ def create_app():
                 raise ApiError("Colours must look like #E8312F.")
             if k == "login_bg" and v not in g.LOGIN_PRESETS:
                 raise ApiError("Unknown login background.")
-            if k in ("allow_signup", "require_approval", "auto_backup"):
+            if k in ("allow_signup", "require_approval", "auto_backup", "upload_approval"):
                 v = "1" if v in ("1", "true", "True", "on") else "0"
             if k == "min_password":
                 v = str(max(4, min(32, int(v or 8))))

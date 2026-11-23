@@ -281,7 +281,7 @@ def init():
     for c_, t_ in (("status", "text"), ("review", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
-    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text")):
+    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text"), ("appr_note", "text"), ("appr_by", "integer"), ("appr_at", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
     ex("""create table if not exists versions(id integer primary key, doc_id integer, ver integer, stored text, filename text, size integer, uploader_id integer, created text, note text)""")
@@ -885,13 +885,13 @@ def read_url(path):
     return None
 
 
-def add_link(cat, name, url, uid):
+def add_link(cat, name, url, uid, pending=False):
     folder = FILES / catpath(cat)
     folder.mkdir(parents=True, exist_ok=True)
     p = unique_path(folder, safe(name), ".url")
     p.write_text(f"[InternetShortcut]\nURL={url}\n", encoding="utf-8")
     pos = q("select coalesce(max(pos),0)+1 m from docs where category_id=?", (cat,))[0]["m"]
-    ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos) values(?,?,?,?,?,?,?,?)", (p.stem, cat, p.name, str(p.relative_to(FILES)), p.stat().st_size, uid, now(), pos))
+    ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos,deleted) values(?,?,?,?,?,?,?,?,?)", (p.stem, cat, p.name, str(p.relative_to(FILES)), p.stat().st_size, uid, now(), pos, PENDING if pending else 0))
     return p
 
 
@@ -952,6 +952,8 @@ def delete_folder_tree(cid, uid):
     docs = q(f"select * from docs where deleted=0 and category_id in ({marks})", tuple(ids))
     for d in docs:
         trash_doc(d, uid)
+    for d in q(f"select * from docs where deleted in (2,3) and category_id in ({marks})", tuple(ids)):      # uploads that were never approved go away with the folder
+        purge_doc(d)
     ex(f"delete from categories where id in ({marks})", tuple(ids))
     for dp, _dn, _fn in os.walk(base, topdown=False):          # remove only the folders that are now empty
         try:
@@ -1041,6 +1043,9 @@ def zip_documents(docs, dest):
 
 
 # ------------------------------------------------------------------ helpers used by the web server
+PENDING, REJECTED = 2, 3        # docs.deleted: 0 = in the library, 1 = Recycle bin, 2 = waiting for admin approval, 3 = rejected
+
+
 class NameConflict(Exception):
     def __init__(self, doc):
         super().__init__("same name")
@@ -1071,17 +1076,15 @@ def _spool(fileobj, dest, maxbytes=0, chunk=1024 * 1024):
     return n
 
 
-def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, note=""):
+def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, note="", pending=False):
+    """Save an uploaded file.  mode: None (ask if the name exists) | 'version' | 'rename' | 'skip'.  -> (doc id, 'added'|'version'|'skipped')"""
     name = safe(Path(filename).name)
     stem, ext = Path(name).stem, Path(name).suffix
     same = find_same_name(cat, stem, ext)
-
     if same and mode is None:
         raise NameConflict(same)
-
     if same and mode == "skip":
         return same["id"], "skipped"
-
     if same and mode == "version":
         tmpdir = ROOT / "tmp"
         tmpdir.mkdir(exist_ok=True)
@@ -1092,37 +1095,15 @@ def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, n
         finally:
             tmp.unlink(missing_ok=True)
         return same["id"], "version"
-
     folder = FILES / catpath(cat)
     folder.mkdir(parents=True, exist_ok=True)
-
     dest = unique_path(folder, safe(title or stem), ext)
-
     n = _spool(fileobj, dest, maxbytes)
-
-    pos = q(
-        "select coalesce(max(pos),0)+1 m from docs where category_id=?",
-        (cat,)
-    )[0]["m"]
-
-    did = ex(
-        "insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos) values(?,?,?,?,?,?,?,?)",
-        (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos)
-    )[0]
-
-    try:
-        import tdms_web
-
-        sp_folder = str(catpath(cat)).replace("\\", "/")
-
-        tdms_web.upload_to_sharepoint(
-            dest,
-            sp_folder
-        )
-
-    except Exception as e:
-        print("SharePoint upload failed:", e)
-
+    pos = q("select coalesce(max(pos),0)+1 m from docs where category_id=?", (cat,))[0]["m"]
+    did = ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos,deleted) values(?,?,?,?,?,?,?,?,?)",
+             (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos, PENDING if pending else 0))[0]
+    if not pending:                                  # a document that waits for approval is NOT sent to SharePoint yet
+        push_to_sharepoint(dest, catpath(cat))
     return did, "added"
 
 
@@ -1139,10 +1120,61 @@ def doc_dict(r, uid, admin):
     return {"id": r["id"], "title": r["title"], "filename": r["filename"], "ext": Path(r["filename"]).suffix.lower(), "type": k, "type_label": label, "size": r["size"] or 0,
             "cat_id": r["category_id"], "cat": r["cat"] or "", "status": r["status"] or "", "review": r["review"] or "", "tags": r["tags"] or "", "descr": r["descr"] or "",
             "ver": r["ver"] or 1, "fav": bool(r["fav"]), "who": r["who"] or "", "uploader_id": r["uploader_id"], "created": r["created"] or "", "deleted_at": r["deleted_at"] or "",
-            "pos": r["pos"], "can_edit": bool(admin or r["uploader_id"] == uid)}
+            "pos": r["pos"], "can_edit": bool(admin or r["uploader_id"] == uid),
+            "appr": {2: "pending", 3: "rejected"}.get(r["deleted"] or 0, ""), "appr_note": r["appr_note"] or ""}
 
 
 def user_dict(u):
     return {"id": u["id"], "username": u["username"], "name": u["name"], "email": u["email"] or "", "emp_id": u["emp_id"] or "", "dept": u["dept"] or "", "designation": u["designation"] or "",
             "phone": u["phone"] or "", "role": u["role"], "active": bool(u["active"]), "pending": bool(u["pending"]), "has_photo": bool(u["photo"]), "has_question": bool(u["question"]),
             "created": u["created"] or ""}
+
+
+# ------------------------------------------------------------------ approval of uploads
+def pending_counts(uid):
+    return {"docs": q("select count(*) c from docs where deleted=2")[0]["c"], "mine_pending": q("select count(*) c from docs where deleted=2 and uploader_id=?", (uid,))[0]["c"],
+            "mine_rejected": q("select count(*) c from docs where deleted=3 and uploader_id=?", (uid,))[0]["c"]}
+
+
+def approve_docs(ids, uid):
+    n = 0
+    for i in ids:
+        if q("select 1 from docs where id=? and deleted in (2,3)", (i,)):
+            ex("update docs set deleted=0, appr_by=?, appr_at=?, appr_note=NULL where id=?", (uid, now(), i))
+            d = get_doc(i)
+            if d:                                    # approved -> now send the copy to SharePoint
+                push_to_sharepoint(FILES / d["stored"], Path(d["stored"]).parent.as_posix())
+            n += 1
+    return n
+
+
+def reject_docs(ids, uid, reason=""):
+    n = 0
+    for i in ids:
+        if q("select 1 from docs where id=? and deleted=2", (i,)):
+            ex("update docs set deleted=3, appr_by=?, appr_at=?, appr_note=? where id=?", (uid, now(), (reason or "")[:300], i))
+            n += 1
+    return n
+
+
+# ------------------------------------------------------------------ SharePoint copy (needs tdms_web.upload_to_sharepoint; does nothing in the desktop program)
+_SP_LOCK = threading.Lock()
+
+
+def push_to_sharepoint(path, folder):
+    """Send a copy of a document to SharePoint in the background. One file at a time (big files use a lot of memory).
+    A SharePoint problem is written to the Activity log and never breaks the upload or the approval."""
+    sp_folder = str(folder).replace("\\", "/")
+
+    def work():
+        with _SP_LOCK:
+            try:
+                import tdms_web
+            except ImportError:
+                return                                  # desktop program: no SharePoint
+            try:
+                tdms_web.upload_to_sharepoint(Path(path), sp_folder)
+            except Exception as e:
+                print("SharePoint upload failed:", e)
+                log("system", "SharePoint upload failed", f"{Path(path).name}: {e}"[:300])
+    threading.Thread(target=work, daemon=True).start()
