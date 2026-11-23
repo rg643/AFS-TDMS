@@ -88,7 +88,7 @@ function renderShell() {
   const prof = h("button", { class: "profile", onclick: e => { e.stopPropagation(); popMenu([{ label: "My profile and settings...", fn: () => profileDialog() }, { label: "Dark / light theme", fn: toggleTheme }, { label: "Shortcuts and tips", fn: helpDialog }, { sep: 1 }, { label: "Sign out", fn: logout }], 0, 0, e.currentTarget); } },
     avatar(S.me.id, 36, "&v=" + (S.me.has_photo ? 1 : 0)), h("div", {}, h("div", { class: "nm" }, S.me.name), h("div", { class: "em" }, [S.me.email || S.me.username, S.me.emp_id ? "#" + S.me.emp_id : "", S.me.role === "admin" ? "ADMINISTRATOR" : "USER"].filter(Boolean).join("  \u00B7  "))));
   const top = h("div", { class: "top" }, h("img", { class: "logo", src: "/brand/logo.png?" + (S.logoBust || ""), alt: "", onerror: e => e.target.remove() }), h("div", { class: "sep" }), h("div", {}, h("div", { class: "appname" }, b.app_name), h("div", { class: "apptag" }, b.subtitle)),
-    h("div", { class: "gsearch search wide" }, gs), h("button", { class: "btn sq", title: "Dark / light", onclick: toggleTheme }, theme() === "dark" ? "\u2600" : "\u263E"), prof);
+    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), h("button", { class: "btn sq", title: "Dark / light", onclick: toggleTheme }, theme() === "dark" ? "\u2600" : "\u263E"), prof);
   S.tabBar = h("div", { class: "tabs" }); S.page = h("div", { class: "page" });
   add(app, h("div", { class: "shell" }, top, S.tabBar, S.page));
   renderTabs(); route();

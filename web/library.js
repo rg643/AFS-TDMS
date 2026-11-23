@@ -93,6 +93,7 @@ function selectFolder(id) {
   S.sel.clear(); S.anchor = null;
   savePrefs({ last_cat: id });
   renderTree(); renderToolbar();
+  if (L.table) { clear(L.table); L.table.appendChild(skeleton(7)); }
   loadDocs().then(renderList).catch(toastErr);
 }
 function setView(v) {
@@ -154,16 +155,17 @@ function pickFolder(title, exclude = new Set(), allowTop = false) {
 function renderToolbar() {
   clear(L.tbar);
   const bin = S.view === "bin", one = S.sel.size === 1, any = S.sel.size > 0;
-  const btn = (t, fn, cls = "", dis = false, title = "") => h("button", { class: "btn " + cls, onclick: e => { e.stopPropagation(); fn(e); }, disabled: dis, title }, t);
-  const searchBox = h("div", { class: "search" }, L.search);
-  add(L.tbar, searchBox, btn("View \u25BE", e => popMenu(viewMenuItems(), 0, 0, e.currentTarget)),
-    btn("Folders", () => { savePrefs({ folders_hidden: flag("folders_hidden") ? "0" : "1" }); L.folders.classList.toggle("hidden", flag("folders_hidden")); L.folders.classList.toggle("collapsed", false); }), h("span", { class: "spacer" }));
+  const grp = (...b) => h("div", { class: "tgroup" }, ...b);
+  const sep = () => h("span", { class: "vsep" });
+  add(L.tbar, h("div", { class: "search" }, L.search), iconBtn("sliders", "View", e => popMenu(viewMenuItems(), 0, 0, e.currentTarget), "", false, "Show, order, columns and layout"),
+    iconBtn("sidebar", "Folders", () => { savePrefs({ folders_hidden: flag("folders_hidden") ? "0" : "1" }); L.folders.classList.toggle("hidden", flag("folders_hidden")); }, "", false, "Show / hide the folder panel"), h("span", { class: "spacer" }));
   if (bin) {
-    add(L.tbar, btn("Restore", restoreSel, "navy", !any), btn("\u2713 All", selectAll), btn("Delete forever", () => deleteSel(true), "danger", !any), btn("More \u25BE", e => popMenu(moreItems(), 0, 0, e.currentTarget)));
+    add(L.tbar, iconBtn("restore", "Restore", restoreSel, "navy", !any), iconBtn("checkall", "", selectAll, "", false, "Select all"), iconBtn("trash", "Delete forever", () => deleteSel(true), "dangerline", !any), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More"));
   } else {
-    add(L.tbar, btn("+ Add \u25BE", e => popMenu(addItems(), 0, 0, e.currentTarget), "primary"), btn("Open", () => selIds().forEach(openDoc), "navy", !any),
-      btn("\u2605", () => favSel(), "sq", !any, "Favorite on / off"), btn("\u25B2", () => moveSel(-1), "sq", !one && !any, "Move up"), btn("\u25BC", () => moveSel(1), "sq", !one && !any, "Move down"),
-      btn("\u2713 All", selectAll), btn("Delete", () => deleteSel(false), "danger", !any), btn("More \u25BE", e => popMenu(moreItems(), 0, 0, e.currentTarget)));
+    add(L.tbar, iconBtn("plus", "Add", e => popMenu(addItems(), 0, 0, e.currentTarget), "primary", false, "Upload files, a folder or a web link"), sep(),
+      grp(iconBtn("open", "Open", () => selIds().forEach(openDoc), "", !any, "Open in a tab"), iconBtn("star", "", () => favSel(), "", !any, "Favorite on / off")),
+      grp(iconBtn("up", "", () => moveSel(-1), "", !one && !any, "Move up   (Alt+Up)"), iconBtn("down", "", () => moveSel(1), "", !one && !any, "Move down   (Alt+Down)")),
+      iconBtn("checkall", "", selectAll, "", false, "Select all   (Ctrl+A)"), sep(), iconBtn("trash", "Delete", () => deleteSel(false), "dangerline", !any, "Move to the Recycle bin   (Del)"), iconBtn("more", "", e => popMenu(moreItems(), 0, 0, e.currentTarget), "", false, "More actions"));
   }
 }
 function addItems() {
@@ -215,8 +217,11 @@ function renderList() {
   L.count.textContent = S.total > S.docs.length ? `${S.docs.length} of ${S.total} document(s)` : `${S.total} document(s)`;
   clear(L.table);
   if (!S.docs.length) {
-    L.table.appendChild(h("div", { class: "empty" }, S.view === "folder" && !S.cat ? "Choose a folder on the left." : S.q ? `No documents match "${S.q}".` : bin ? "The Recycle bin is empty." : "Nothing here yet.\nDrag files or a folder here, or use + Add."));
-    $(".empty", L.table).style.whiteSpace = "pre-line";
+    L.table.appendChild(S.view === "folder" && !S.cat ? emptyState("folder", "Choose a folder", "Pick a folder on the left to see its documents.") :
+      S.q ? emptyState("search", "No matching documents", `Nothing matches "${S.q}". Try another word or clear the search.`) :
+      S.chip !== "all" ? emptyState("file", "No documents of this type", "Choose All to see everything in this folder.") :
+      bin ? emptyState("trash", "The Recycle bin is empty", "Deleted documents wait here before they are removed for good.") :
+      emptyState("upload", "This folder is empty", "Drag files or a whole folder here, or use Add.", S.view === "folder" ? iconBtn("upload", "Upload files", () => pickFiles(false), "primary") : null));
     renderToolbar(); updateDetails(); renderPreview(); return;
   }
   const arrow = k => S.order === k ? h("span", { class: "ar" }, S.desc ? "\u25BC" : "\u25B2") : "";

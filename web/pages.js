@@ -107,18 +107,23 @@ function textEditor(body, r, id) {
 }
 
 /* ================================================================ dashboard ================================================================ */
+const TILE_ICONS = { docs: "file", size: "db", folders: "folder", week: "calendar", mine: "user", fav: "star", versions: "layers", trash: "trash", users: "users", pending: "clock" };
 const TILE_COLORS = { docs: "var(--red)", size: "#2E6DB4", folders: "#D4A017", week: "#1D8348", mine: "#8E44AD", fav: "#F2B01E", versions: "#0097A7", trash: "#E0713F", users: "#3F51B5", pending: "#F28C1E" };
 let _dash = null;
 async function renderDashboard(root) {
   clear(root);
   const wrap = h("div", {}); root.appendChild(wrap); _dash = wrap;
+  wrap.appendChild(skeleton(6));
   let d; try { d = await api("/api/dashboard"); } catch (e) { return toastErr(e); }
   if (_dash !== wrap) return;
+  clear(wrap);
   const chart = (name, hh, extra = "") => h("img", { class: "chartimg", dataset: { chart: name, h: hh, extra }, alt: "" });
   const docTable = (rows, cols2) => !rows.length ? h("div", { class: "muted small", style: { padding: "10px 4px" } }, "Nothing here yet.") :
     h("table", { class: "mini" }, h("tbody", {}, ...rows.map(x => h("tr", { class: x.late ? "late" : "", onclick: () => openDoc(x) }, h("td", {}, fileIcon(x.type, 18), x.title), ...cols2(x).map(c => h("td", { class: "muted" }, c))))));
-  add(wrap,
-    h("div", { class: "tiles" }, ...d.tiles.map(t => h("div", { class: "card tile", style: { "--c": TILE_COLORS[t.key] || "var(--blue)" } }, h("div", { class: "bar" }), h("div", { class: "v" }, String(t.value)), h("div", { class: "l" }, t.label), h("div", { class: "s" }, t.sub)))),
+  add(wrap, pageHead("Dashboard", `Overview of the document library  \u00B7  signed in as ${S.me.name}`, iconBtn("refresh", "Refresh", () => renderDashboard(root))),
+    h("div", { class: "tiles" }, ...d.tiles.map(t => h("div", { class: "card tile", style: { "--c": TILE_COLORS[t.key] || "var(--blue)" } },
+      h("div", { class: "ti" }, svgIcon(TILE_ICONS[t.key] || "file", 22)), h("div", { class: "tb" }, h("div", { class: "l" }, t.label), h("div", { class: "v" }, String(t.value)),
+        h("div", { class: "s" + (t.sub.startsWith("\u25B2") ? " up" : t.sub.startsWith("\u25BC") ? " down" : "") }, t.sub))))),
     h("div", { class: "grid3" }, h("div", { class: "card" }, h("h3", {}, "Recently opened by you"), docTable(d.opened, x => [x.cat])), h("div", { class: "card" }, h("h3", {}, "Your favorites"), docTable(d.favorites, x => [x.cat])),
       h("div", { class: "card" }, h("h3", {}, "Most opened"), docTable(d.most, x => [x.opens + "x"]))),
     h("div", { class: "grid2" }, h("div", { class: "card" }, h("h3", {}, "Uploads in the last 14 days"), chart("uploads", 190)),
@@ -156,8 +161,9 @@ async function renderUsers(root) {
     h("td", {}, u.pending ? [act("Approve", run(`/api/users/${u.id}/approve`, {}, "Approved."), "primary"), act("Reject", async () => { if (await confirmDlg("Reject", `Reject the request from ${u.name}?`, "Reject", "danger")) run(`/api/users/${u.id}/reject`, {}, "Rejected.")(); })] :
       [act("Edit", () => profileDialog(u, () => renderUsers(root))), act("Reset password", () => resetPassword(u)), u.id === S.me.id ? "" : act(u.active ? "Disable" : "Enable", run(`/api/users/${u.id}/toggle`, {}, "Done.")),
         u.id === S.me.id ? "" : act("Delete", async () => { if (await confirmDlg("Delete user", `Delete ${u.name}? Their documents stay in the library.`, "Delete", "danger")) run(`/api/users/${u.id}/delete`, {}, "Deleted.")(); })])));
-  add(root, h("div", { class: "card" }, h("div", { class: "row" }, h("h3", { style: { margin: 0 } }, `Users  (${r.users.length})`), pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, pending + " waiting for approval") : "", h("span", { class: "spacer" }), h("button", { class: "btn primary", onclick: () => addUserDialog(() => renderUsers(root)) }, "+ Add user")),
-    h("div", { style: { overflow: "auto", marginTop: "10px" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["", "Name", "Employee ID", "Department", "Role", "Status", ""].map(x => h("th", {}, x)))), h("tbody", {}, ...rows)))));
+  add(root, pageHead("Users", "People who can sign in, and what they can do", pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, pending + " waiting for approval") : "", iconBtn("plus", "Add user", () => addUserDialog(() => renderUsers(root)), "primary")),
+    h("div", { class: "card flush" },
+    h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["", "Name", "Employee ID", "Department", "Role", "Status", ""].map(x => h("th", {}, x)))), h("tbody", {}, ...rows)))));
 }
 function addUserDialog(done) {
   const f = { email: h("input", { class: "inp", placeholder: "name@company.com" }), name: h("input", { class: "inp" }), emp: h("input", { class: "inp" }), dept: h("input", { class: "inp" }), pw: h("input", { class: "inp", type: "password" }), role: select([["user", "User"], ["admin", "Administrator"]], "user") };
@@ -178,9 +184,8 @@ async function renderActivity(root) {
     try { rows = (await api("/api/admin/activity?q=" + encodeURIComponent(q.value.trim()))).rows; } catch (e) { return toastErr(e); }
     clear(tb); rows.forEach(r => tb.appendChild(h("tr", {}, h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, fmtDate(r.ts)), h("td", {}, r.user), h("td", {}, r.action), h("td", { class: "muted" }, r.detail)))); count.textContent = rows.length + " entries";
   }
-  add(root, h("div", { class: "card" }, h("div", { class: "row" }, h("h3", { style: { margin: 0 } }, "Activity"), h("div", { class: "search" }, q), count, h("span", { class: "spacer" }),
-    h("button", { class: "btn", onclick: () => { const c = s => '"' + String(s ?? "").replace(/"/g, '""') + '"'; downloadText("TDMS_activity.csv", "\ufeff" + ["Time,User,Action,Detail", ...rows.map(r => [r.ts, r.user, r.action, r.detail].map(c).join(","))].join("\r\n")); } }, "Export CSV")),
-    h("div", { style: { overflow: "auto", marginTop: "10px" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["Time", "User", "Action", "Detail"].map(x => h("th", {}, x)))), tb))));
+  add(root, pageHead("Activity", "Everything that happens in the library, newest first", h("div", { class: "search" }, q), iconBtn("download", "Export CSV", () => { const c = s => '"' + String(s ?? "").replace(/"/g, '""') + '"'; downloadText("TDMS_activity.csv", "\ufeff" + ["Time,User,Action,Detail", ...rows.map(r => [r.ts, r.user, r.action, r.detail].map(c).join(","))].join("\r\n")); })),
+    h("div", { class: "card flush" }, h("div", { class: "row", style: { padding: "10px 16px" } }, count), h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["Time", "User", "Action", "Detail"].map(x => h("th", {}, x)))), tb))));
   load();
 }
 
@@ -199,7 +204,7 @@ async function renderAdmin(root) {
     try { const r = await post("/api/admin/settings", body); applyBrand(r.brand); renderShell(); toast("Settings saved.", "ok"); } catch (e) { toastErr(e); }
   };
   const logoIn = h("input", { type: "file", accept: "image/*", style: { display: "none" }, onchange: async () => { const fd = new FormData(); fd.append("file", logoIn.files[0]); try { await api("/api/admin/logo", { method: "POST", form: fd }); toast("Logo changed.", "ok"); S.logoBust = Date.now(); renderShell(); } catch (e) { toastErr(e); } } });
-  add(root, h("div", { class: "grid2e" },
+  add(root, pageHead("Admin", "Branding, rules and server"), h("div", { class: "grid2e" },
     h("div", { class: "card" }, h("h3", {}, "Branding"), field("APPLICATION NAME", f.app_name), h("div", { class: "form2" }, field("SHORT NAME", f.short_name), field("COMPANY", f.company)), field("SUBTITLE", f.subtitle), field("TAGLINE", f.tagline),
       h("div", { class: "form2" }, field("ACCENT COLOUR", f.brand_red), field("BLUE", f.brand_blue)), h("div", { class: "form2" }, field("NAVY (table headings)", f.brand_navy), field("LOGIN BACKGROUND", f.login_bg)),
       h("div", { class: "row", style: { marginTop: "14px" } }, h("button", { class: "btn", onclick: () => logoIn.click() }, "Change logo..."), h("button", { class: "btn ghost", onclick: async () => { await api("/api/admin/logo", { method: "DELETE" }); toast("Logo reset.", "ok"); S.logoBust = Date.now(); renderShell(); } }, "Use the default logo"), logoIn)),

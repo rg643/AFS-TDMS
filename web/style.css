@@ -1,5 +1,5 @@
 :root{--red:#E8312F;--blue:#2E6DB4;--navy:#1F3A5F;
-  --bg:#EEF2F8;--card:#fff;--ink:#1E2A38;--title:#1F3A5F;--muted:#6B7785;--line:#E3E8EF;--tile:#F6F9FD;--hover:#EAF2FC;--sel:#2E6DB4;--selink:#fff;--input:#fff;--shadow:0 1px 2px rgba(20,40,80,.06),0 6px 18px rgba(20,40,80,.07);--head:#fff;--pill:#E8EEF6}
+  --bg:#F3F6FA;--card:#fff;--ink:#1B2733;--title:#1B3558;--muted:#667487;--line:#E2E7EF;--tile:#F7F9FC;--hover:#EEF3FA;--sel:#2E6DB4;--selink:#fff;--input:#fff;--shadow:0 1px 2px rgba(20,40,80,.06),0 6px 18px rgba(20,40,80,.07);--head:#fff;--pill:#E8EEF6}
 [data-theme=dark]{--bg:#0F1722;--card:#1B2636;--ink:#E8EEF7;--title:#DCE6F5;--muted:#8FA0B8;--line:#2C3A50;--tile:#202D40;--hover:#243449;--input:#142030;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 18px rgba(0,0,0,.25);--head:#16202E;--pill:#27364C}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -263,3 +263,91 @@ table.docs td.ck,table.docs th.ck{width:34px;padding:0 0 0 12px}
   .auth .mlogo{display:block;margin:0 0 18px}.auth .mlogo img{height:40px;object-fit:contain}
 }
 .auth .alert{margin-top:12px}
+
+
+/* =====================================================  INSIDE UI v2  (calmer, flatter, more professional)  ===================================================== */
+*{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--muted) 45%,transparent) transparent}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 40%,transparent);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--blue) 60%,transparent);outline-offset:2px}
+.btn{background:var(--card);border:1px solid var(--line);color:var(--ink);box-shadow:0 1px 2px rgba(16,24,40,.05);height:34px;border-radius:9px;font-weight:500;padding:0 13px}
+.btn:hover{background:var(--tile);border-color:color-mix(in srgb,var(--line) 55%,var(--muted))}
+.btn svg{width:16px;height:16px;flex:0 0 16px}
+.btn.primary{background:var(--red);border-color:var(--red);color:#fff}.btn.primary:hover{background:color-mix(in srgb,var(--red) 88%,#000);border-color:color-mix(in srgb,var(--red) 88%,#000)}
+.btn.navy{background:var(--navy);border-color:var(--navy);color:#fff}.btn.navy:hover{background:color-mix(in srgb,var(--navy) 85%,#fff)}
+.btn.danger{background:#D32F2F;border-color:#D32F2F;color:#fff}.btn.danger:hover{background:#B71C1C}
+.btn.dangerline{color:#C62828;border-color:color-mix(in srgb,#D32F2F 35%,var(--line))}.btn.dangerline:hover{background:#D32F2F;color:#fff;border-color:#D32F2F}
+.btn.ghost{background:transparent;border-color:transparent;box-shadow:none}.btn.ghost:hover{background:var(--hover)}
+.btn.sq{width:34px;padding:0}.btn[disabled]{opacity:.42}
+.tgroup{display:inline-flex}.tgroup .btn{border-radius:0;margin-left:-1px}.tgroup .btn:first-child{border-radius:9px 0 0 9px;margin-left:0}.tgroup .btn:last-child{border-radius:0 9px 9px 0}
+.vsep{width:1px;height:22px;background:var(--line);margin:0 4px}
+.chip{background:var(--card);border:1px solid var(--line);color:var(--ink)}.chip:hover{background:var(--tile)}.chip.on{background:var(--c,var(--blue));border-color:var(--c,var(--blue));color:#fff}
+.badge{font-weight:600;letter-spacing:.01em}
+.badge.soft{background:color-mix(in srgb,var(--c) 14%,var(--card))}
+.card{border:1px solid var(--line);box-shadow:0 1px 2px rgba(16,24,40,.04),0 4px 14px rgba(16,24,40,.04);border-radius:14px}
+.card.flush{padding:0;overflow:hidden}
+.card h3{font-size:14px;font-weight:600;color:var(--title);margin:0 0 12px}
+.top{box-shadow:0 1px 0 rgba(16,24,40,.04);border-bottom:2px solid var(--red);padding:9px 20px}
+.gsearch kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font:11px/1 inherit;border:1px solid var(--line);border-radius:5px;padding:3px 7px;color:var(--muted);background:var(--tile)}
+.tab{height:40px;border-radius:11px;font-weight:600;font-size:13.5px;box-shadow:0 1px 3px rgba(20,40,80,.10)}
+.tab.on{box-shadow:0 4px 12px color-mix(in srgb,var(--c) 40%,transparent)}
+/* page heading */
+.pagehead{display:flex;align-items:flex-end;gap:12px;margin:2px 2px 14px;flex-wrap:wrap}
+.pagehead h1{margin:0;font-size:22px;font-weight:700;color:var(--title);letter-spacing:-.01em}
+.pagehead p{margin:3px 0 0;color:var(--muted)}
+/* folders */
+.folders{padding:14px 12px}
+.folders .head b{font-size:15px;font-weight:700}
+.node{height:32px;border-radius:8px;margin:1px 0}
+.node:hover{background:var(--hover)}
+.node.on{background:color-mix(in srgb,var(--blue) 13%,var(--card));color:var(--ink);font-weight:600;box-shadow:inset 3px 0 0 var(--blue)}
+.node.on .arr{color:var(--muted)}
+.node .cnt{background:var(--pill);padding:1px 7px;border-radius:9px;opacity:1;font-size:11px;font-weight:600;color:var(--muted)}
+.binrow{border-radius:9px}.binrow.on{background:color-mix(in srgb,var(--blue) 13%,var(--card));color:var(--ink);box-shadow:inset 3px 0 0 var(--blue)}
+.binrow .cnt{background:var(--pill);padding:1px 8px;border-radius:9px;color:var(--muted)}
+/* document table */
+.tablewrap{border:1px solid var(--line);border-radius:12px}
+table.docs th{background:var(--navy);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;height:40px;font-weight:600}
+table.docs td{height:42px;font-size:13.5px;border-bottom:1px solid var(--line)}
+table.compact td{height:30px}
+table.docs tbody tr:nth-child(even) td{background:transparent}
+table.docs tbody tr:hover td{background:var(--hover)}
+table.docs tr.sel td{background:color-mix(in srgb,var(--blue) 14%,var(--card));color:var(--ink)}
+table.docs tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--blue)}
+table.docs tr.sel .badge{background:var(--c)!important;color:#fff!important}
+table.docs td.ck input,table.docs th.ck input{accent-color:var(--blue);width:15px;height:15px}
+.detline{padding:2px 4px 0}
+/* empty and loading states */
+.empty{padding:70px 20px}
+.empty .ei{width:64px;height:64px;border-radius:50%;margin:0 auto 14px;display:grid;place-items:center;background:var(--pill);color:var(--muted)}
+.empty .et{font-size:16px;font-weight:600;color:var(--title)}.empty .eh{margin-top:4px;max-width:360px;margin-left:auto;margin-right:auto}
+.skelbox{padding:10px 14px}.skelrow{display:flex;align-items:center;gap:14px;height:42px;border-bottom:1px solid var(--line)}
+.skel{display:block;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--pill) 25%,var(--line) 50%,var(--pill) 75%);background-size:200% 100%;animation:sh 1.2s linear infinite}
+@keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}
+/* dashboard cards */
+.tiles{gap:14px}
+.tile{display:flex;gap:14px;align-items:center;padding:16px 18px}
+.tile .bar{display:none}
+.tile .ti{width:46px;height:46px;flex:0 0 46px;border-radius:12px;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 14%,var(--card));color:var(--c)}
+.tile .tb{min-width:0}.tile .l{font-size:12.5px;font-weight:500;color:var(--muted)}
+.tile .v{font-size:25px;font-weight:700;color:var(--title);line-height:1.15}
+.tile .s{font-size:11.5px;color:var(--muted)}.tile .s.up{color:#1D8348;font-weight:600}.tile .s.down{color:#C62828;font-weight:600}
+.mini td{padding:8px 6px}
+/* menus, dialogs, toasts */
+.menu{border-radius:12px;padding:6px;box-shadow:0 12px 36px rgba(16,24,40,.22)}
+.menu .it{padding:8px 12px;border-radius:8px}.menu .it:hover{background:var(--hover);color:var(--ink)}
+.dlg{border-radius:16px}
+.dlg .hd{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 12px 22px;border-bottom:1px solid var(--line);font-size:17px}
+.dlg .hd .xbtn{width:32px;height:32px;border:0;border-radius:8px;background:transparent;cursor:pointer;display:grid;place-items:center;color:var(--muted)}
+.dlg .hd .xbtn:hover{background:var(--hover);color:var(--ink)}
+.dlg .bd{padding:10px 22px 8px}
+.dlg .ft{border-top:1px solid var(--line);padding:14px 22px;background:var(--tile)}
+.toast{display:flex;align-items:center;gap:10px;padding:11px 16px;border-radius:12px}
+.toast svg{flex:0 0 18px}
+/* tables on admin pages */
+.table2 th{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;padding:11px 16px;background:var(--tile)}
+.table2 td{padding:12px 16px}
+.table2 tbody tr:hover td{background:var(--hover)}
+.card.flush .table2 th{position:sticky;top:0}
+.viewer .vbar{padding:2px 2px}
+.vbody{border:1px solid var(--line);box-shadow:none}
+.cnt:empty{display:none}
