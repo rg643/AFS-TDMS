@@ -1072,14 +1072,16 @@ def _spool(fileobj, dest, maxbytes=0, chunk=1024 * 1024):
 
 
 def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, note=""):
-    """Save an uploaded file.  mode: None (ask if the name exists) | 'version' | 'rename' | 'skip'.  -> (doc id, 'added'|'version'|'skipped')"""
     name = safe(Path(filename).name)
     stem, ext = Path(name).stem, Path(name).suffix
     same = find_same_name(cat, stem, ext)
+
     if same and mode is None:
         raise NameConflict(same)
+
     if same and mode == "skip":
         return same["id"], "skipped"
+
     if same and mode == "version":
         tmpdir = ROOT / "tmp"
         tmpdir.mkdir(exist_ok=True)
@@ -1090,13 +1092,37 @@ def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, n
         finally:
             tmp.unlink(missing_ok=True)
         return same["id"], "version"
+
     folder = FILES / catpath(cat)
     folder.mkdir(parents=True, exist_ok=True)
+
     dest = unique_path(folder, safe(title or stem), ext)
+
     n = _spool(fileobj, dest, maxbytes)
-    pos = q("select coalesce(max(pos),0)+1 m from docs where category_id=?", (cat,))[0]["m"]
-    did = ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos) values(?,?,?,?,?,?,?,?)",
-             (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos))[0]
+
+    pos = q(
+        "select coalesce(max(pos),0)+1 m from docs where category_id=?",
+        (cat,)
+    )[0]["m"]
+
+    did = ex(
+        "insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos) values(?,?,?,?,?,?,?,?)",
+        (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos)
+    )[0]
+
+    try:
+        import tdms_web
+
+        sp_folder = str(catpath(cat)).replace("\\", "/")
+
+        tdms_web.upload_to_sharepoint(
+            dest,
+            sp_folder
+        )
+
+    except Exception as e:
+        print("SharePoint upload failed:", e)
+
     return did, "added"
 
 

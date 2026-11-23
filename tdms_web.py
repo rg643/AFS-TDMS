@@ -18,6 +18,8 @@ import sys
 import tempfile
 import threading
 import time
+import requests
+import base64
 from functools import wraps
 from pathlib import Path
 
@@ -41,11 +43,33 @@ INLINE_OK = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg
              ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4",
              ".aac": "audio/aac", ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8", ".json": "text/plain; charset=utf-8",
              ".xml": "text/plain; charset=utf-8", ".csv": "text/plain; charset=utf-8"}
+
+# settings (created in create_app)
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
-S = None                       # settings (created in create_app)
+
+S = None
+
+FLOW_URL = "https://default9d0bf1ed9dbb4ad2b95eefaf178699.37.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/29/workflows/81de89cdb6e546d9b4f348d7d655f3aa/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ysPgU2hmogGpbmARhzS4B_IfhZkTNPFaqa-jvAU34HU"
+
+def upload_to_sharepoint(path, folder_path):
+    with open(path, "rb") as f:
+        content = base64.b64encode(f.read()).decode()
+
+    payload = {
+        "filename": path.name,
+        "folder": folder_path,
+        "filecontent": content
+    }
+
+    r = requests.post(FLOW_URL, json=payload, timeout=300)
+
+    if r.status_code != 200:
+        raise Exception("SharePoint upload failed")
+
+    return r.json()
+
 _FAILS, _FLOCK = {}, threading.Lock()
 _OFFICE_LOCK = threading.Lock()
-
 
 class ApiError(Exception):
     def __init__(self, msg, code=400):
