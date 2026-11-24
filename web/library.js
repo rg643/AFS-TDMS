@@ -76,7 +76,11 @@ function renderTree() {
       const kids = childrenOf(f.id), open = S.expanded.has(f.id);
       const on = S.view === "folder" && S.cat === f.id;
       const node = h("div", { class: "node" + (on ? " on" : ""), style: { paddingLeft: 4 + depth * 16 + "px" }, dataset: { id: f.id },
-        onclick: () => selectFolder(f.id), oncontextmenu: e => { if (!isAdmin()) return; e.preventDefault(); selectFolder(f.id); popMenu(folderMenuItems(), e.clientX, e.clientY); } },
+        onclick: () => selectFolder(f.id),
+        ondragover: e => { if (isDocDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; e.currentTarget.classList.add("dropt"); } },
+        ondragleave: e => e.currentTarget.classList.remove("dropt"),
+        ondrop: e => { e.currentTarget.classList.remove("dropt"); const raw = e.dataTransfer.getData("text/x-tdms-docs"); if (raw) { e.preventDefault(); moveByDrop(JSON.parse(raw), f.id); } },
+        oncontextmenu: e => { if (!isAdmin()) return; e.preventDefault(); selectFolder(f.id); popMenu(folderMenuItems(), e.clientX, e.clientY); } },
         h("span", { class: "arr", onclick: e => { e.stopPropagation(); if (open) S.expanded.delete(f.id); else S.expanded.add(f.id); renderTree(); } }, kids.length ? (open ? "\u25BC" : "\u25B6") : ""),
         folderIcon(f.color), h("span", { class: "nm", title: f.name }, f.name), f.count ? h("span", { class: "cnt" }, f.count) : null);
       L.tree.appendChild(node);
@@ -119,6 +123,34 @@ function setView(v) {
   if (v === "folder" && !S.cat) S.cat = +S.prefs.last_cat || (childrenOf(null)[0] || {}).id;
   renderTree(); renderToolbar();
   loadDocs().then(renderList).catch(toastErr);
+}
+const isDocDrag = e => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes("text/x-tdms-docs");
+function rowDragStart(e, d) {
+  const ids = S.sel.has(d.id) ? selIds() : [d.id];
+  e.dataTransfer.setData("text/x-tdms-docs", JSON.stringify(ids)); e.dataTransfer.setData("text/plain", ids.length + " document(s)"); e.dataTransfer.effectAllowed = "move";
+}
+async function moveByDrop(ids, cat) {
+  const name = (folderById(cat) || {}).name || "the folder";
+  if (S.view === "folder" && S.cat === cat) return toast("Those documents are already in this folder.");
+  try {
+    const r = await post("/api/docs/move", { ids, cat }); S.sel.clear(); await refreshLibrary();
+    toast(`${r.done} document(s) moved to "${name}"` + (r.skipped ? `  -  ${r.skipped} skipped (you can only move documents you added)` : ""), r.done ? "ok" : "");
+  } catch (e) { toastErr(e); }
+}
+async function copyLink(id) {
+  const url = location.origin + "/#/doc/" + id;
+  try { await navigator.clipboard.writeText(url); toast("Link copied. People who are signed in can open it.", "ok"); }
+  catch (e) { const i = h("input", { class: "inp", value: url, readonly: true, onfocus: ev => ev.target.select() }); dialog({ title: "Link to this document", width: 520, body: [h("p", { class: "muted" }, "Copy this link (Ctrl+C):"), i], buttons: [{ text: "Close" }] }); setTimeout(() => i.select(), 60); }
+}
+function bulkEdit() {
+  const ds = selDocs(); if (!ds.length) return;
+  const st = select([["__keep", "(keep as it is)"], ...S.statuses.map(s => [s, s === "(none)" ? "(clear the status)" : s])], "__keep"), rev = h("input", { class: "inp", type: "date" }), tags = h("input", { class: "inp", placeholder: "e-plan, rev C" });
+  dialog({ title: `Edit ${ds.length} document(s) at once`, width: 520, body: [h("p", { class: "muted", style: { margin: "2px 0 0" } }, "Only the things you fill in are changed."), h("div", { class: "form2" }, field("STATUS", st), field("REVIEW DATE", rev, "Leave empty to keep")), field("ADD TAGS", tags, "Separate with commas. Added to the tags each document already has.")],
+    buttons: [{ text: "Cancel" }, { text: "Apply to all", kind: "primary", fn: async () => {
+      const body = { ids: selIds() }; if (st.value !== "__keep") body.status = st.value; if (rev.value) body.review = rev.value; if (tags.value.trim()) body.tags_add = tags.value.trim();
+      if (Object.keys(body).length === 1) throw new Error("Choose at least one change.");
+      const r = await post("/api/docs/bulk", body); await refreshLibrary(false); toast(`${r.done} document(s) updated` + (r.skipped ? `, ${r.skipped} skipped (only an admin or the person who added a document can edit it)` : "") + ".", "ok");
+    } }] });
 }
 function userFolderMenu() {
   const f = S.cat && S.view === "folder" ? folderById(S.cat) : null;
@@ -216,9 +248,9 @@ function viewMenuItems() {
 }
 function moreItems() {
   const any = S.sel.size > 0, one = S.sel.size === 1;
-  if (isViewer()) return [{ label: "Download", dis: !any, fn: downloadSel }, { label: "Save selected as ZIP", dis: !any, fn: zipSel }, { label: "Export this list (CSV)", fn: exportList }, { sep: 1 }, { label: "Select all   (Ctrl+A)", fn: selectAll }];
+  if (isViewer()) return [{ label: "Copy link", dis: !one, fn: () => copyLink(selIds()[0]) }, { label: "Download", dis: !any, fn: downloadSel }, { label: "Save selected as ZIP", dis: !any, fn: zipSel }, { label: "Export this list (CSV)", fn: exportList }, { sep: 1 }, { label: "Select all   (Ctrl+A)", fn: selectAll }];
   if (S.view === "bin") return [{ label: "Restore", dis: !any, fn: restoreSel }, { label: "Delete forever", dis: !any, fn: () => deleteSel(true) }, isAdmin() ? { sep: 1 } : null, isAdmin() ? { label: "Empty the Recycle bin", fn: emptyBin } : null];
-  return [{ label: "Details, status, tags...", dis: !one, fn: editDetails }, { label: "Rename   (F2)", dis: !one, fn: renameDoc }, { label: "Move to folder...", dis: !any, fn: moveDocs }, { label: "New version of this document...", dis: !one, fn: newVersion },
+  return [{ label: "Details, status, tags...", dis: !one, fn: editDetails }, { label: "Rename   (F2)", dis: !one, fn: renameDoc }, { label: "Edit selected (status, tags)...", dis: !any, fn: bulkEdit }, { label: "Move to folder...", dis: !any, fn: moveDocs }, { label: "Copy link", dis: !one, fn: () => copyLink(selIds()[0]) }, { label: "New version of this document...", dis: !one, fn: newVersion },
     { label: "Version history...", dis: !one, fn: versionHistory }, { sep: 1 }, { label: "Download", dis: !any, fn: downloadSel }, { label: "Save selected as ZIP", dis: !any, fn: zipSel }, { label: "Export this list (CSV)", fn: exportList },
     { label: "Select all   (Ctrl+A)", fn: selectAll }, { sep: 1 }, { label: "Move to Recycle bin   (Del)", dis: !any, fn: () => deleteSel(false) }];
 }
@@ -270,7 +302,7 @@ function renderList() {
     ...COLS.filter(x => c.includes(x[0])).map(([k, t, sk]) => h("th", { class: "c-" + k, onclick: () => sortBy(sk) }, k === "added" && bin ? "Deleted" : t, arrow(sk))));
   const body = h("tbody");
   for (const d of S.docs) {
-    const tr = h("tr", { dataset: { id: d.id }, class: S.sel.has(d.id) ? "sel" : "", onclick: e => rowClick(e, d), ondblclick: () => bin ? null : openDoc(d.id), oncontextmenu: e => rowMenu(e, d) },
+    const tr = h("tr", { dataset: { id: d.id }, class: S.sel.has(d.id) ? "sel" : "", draggable: canWrite() && S.view !== "bin" && S.view !== "uploads" ? "true" : null, ondragstart: e => rowDragStart(e, d), onclick: e => rowClick(e, d), ondblclick: () => bin ? null : openDoc(d.id), oncontextmenu: e => rowMenu(e, d) },
       h("td", { class: "ck" }, h("input", { type: "checkbox", checked: S.sel.has(d.id), onclick: e => { e.stopPropagation(); toggleSel(d.id); } })),
       h("td", { title: d.filename }, h("div", { class: "nm2" }, fileIcon(d.type, compact() ? 18 : 22), h("span", {}, d.fav ? h("span", { class: "star" }, "\u2605 ") : "", d.title, d.ver > 1 ? h("span", { class: "ver" }, "v" + d.ver) : ""))));
     for (const [k] of COLS.filter(x => c.includes(x[0]))) {
@@ -500,7 +532,7 @@ function askConflict(name) {
 async function startUpload(items, cat) {
   const max = items.length; if (!max) return;
   upPanel();
-  let ok = 0, fail = 0, skipped = 0, sticky = null, pend = 0;
+  let ok = 0, fail = 0, skipped = 0, sticky = null, pend = 0, dups = 0;
   for (const it of items) {
     const row = h("div", { class: "u" }, h("div", {}, (it.rel || it.file.name)), h("div", { class: "bar" }, h("i")));
     Up.list.appendChild(row);
@@ -512,12 +544,16 @@ async function startUpload(items, cat) {
       if (choice.mode === "skip") { skipped++; row.firstChild.textContent += "  (skipped)"; bar.style.width = "100%"; continue; }
       r = await sendFile(cat, it, choice.mode, set, st);
     }
-    if (r.status === 200) { ok++; if (r.json && r.json.pending) pend++; bar.style.width = "100%"; bar.style.background = "#1D8348"; }
+    if (r.status === 200) {
+      ok++; if (r.json && r.json.pending) pend++; bar.style.width = "100%"; bar.style.background = "#1D8348";
+      if (r.json && r.json.duplicate_of) { dups++; row.appendChild(h("div", { class: "muted small" }, `Same content as "${r.json.duplicate_of.title}" in ${r.json.duplicate_of.cat}`)); }
+    }
     else { fail++; bar.style.width = "100%"; bar.style.background = "#D32F2F"; row.appendChild(h("div", { style: { color: "#D32F2F" } }, (r.json && r.json.error) || "Failed")); }
   }
   toast(`${ok} uploaded${pend ? `  -  ${pend} waiting for admin approval` : ""}${skipped ? `, ${skipped} skipped` : ""}${fail ? `, ${fail} failed` : ""}.`, fail ? "err" : "ok");
   refreshCounts();
-  setTimeout(() => { if (Up.box) Up.box.remove(); }, fail ? 15000 : 2500);
+  if (dups) toast(`${dups} file(s) are identical to documents that are already in the library.`);
+  setTimeout(() => { if (Up.box) Up.box.remove(); }, fail || dups ? 15000 : 2500);
   await refreshLibrary();
 }
 

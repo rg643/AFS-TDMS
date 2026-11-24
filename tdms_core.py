@@ -281,10 +281,11 @@ def init():
     for c_, t_ in (("status", "text"), ("review", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
-    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text"), ("appr_note", "text"), ("appr_by", "integer"), ("appr_at", "text")):
+    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text"), ("appr_note", "text"), ("appr_by", "integer"), ("appr_at", "text"), ("sha", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
     ex("""create table if not exists versions(id integer primary key, doc_id integer, ver integer, stored text, filename text, size integer, uploader_id integer, created text, note text)""")
+    ex("""create table if not exists comments(id integer primary key, doc_id integer, user_id integer, created text, body text)""")
     ex("create index if not exists ix_ver_doc on versions(doc_id)")
     if "color" not in cols("categories"):
         ex("alter table categories add column color text")
@@ -579,6 +580,7 @@ def restore_doc(d):
 
 
 def purge_doc(d):
+    ex("delete from comments where doc_id=?", (d["id"],))
     """Delete for good (file, old versions, favourites, record)."""
     if d["trash"]:
         (FILES / d["trash"]).unlink(missing_ok=True)
@@ -619,7 +621,7 @@ def add_version(d, src, uid, note=""):
        (d["id"], ver, str(arch.relative_to(FILES)), d["filename"], arch.stat().st_size if arch.exists() else 0, d["updated_by"] or d["uploader_id"], d["created"], d["vnote"] or ""))
     dest = unique_path(cur.parent, safe(d["title"]), src.suffix)
     shutil.copy2(src, dest)
-    ex("update docs set filename=?, stored=?, size=?, created=?, ver=?, updated_by=?, vnote=? where id=?",
+    ex("update docs set filename=?, stored=?, size=?, created=?, ver=?, updated_by=?, vnote=?, sha=NULL where id=?",
        (dest.name, str(dest.relative_to(FILES)), dest.stat().st_size, now(), ver + 1, uid, note, d["id"]))
 
 
@@ -1060,7 +1062,7 @@ def get_or_make_cat(parent, name):
     return ex("insert into categories(name,parent_id,sort) values(?,?,(select coalesce(max(sort),0)+1 from categories where parent_id is ?))", (name, parent, parent))[0]
 
 
-def _spool(fileobj, dest, maxbytes=0, chunk=1024 * 1024):
+def _spool(fileobj, dest, maxbytes=0, chunk=1024 * 1024, hasher=None):
     n = 0
     with open(dest, "wb") as fo:
         while True:
@@ -1073,6 +1075,8 @@ def _spool(fileobj, dest, maxbytes=0, chunk=1024 * 1024):
                 Path(dest).unlink(missing_ok=True)
                 raise ValueError(f"The file is bigger than the allowed size ({size(maxbytes)}).")
             fo.write(buf)
+            if hasher is not None:
+                hasher.update(buf)
     return n
 
 
@@ -1098,10 +1102,11 @@ def add_stream(cat, filename, fileobj, uid, title=None, mode=None, maxbytes=0, n
     folder = FILES / catpath(cat)
     folder.mkdir(parents=True, exist_ok=True)
     dest = unique_path(folder, safe(title or stem), ext)
-    n = _spool(fileobj, dest, maxbytes)
+    hasher = hashlib.sha256()
+    n = _spool(fileobj, dest, maxbytes, hasher=hasher)
     pos = q("select coalesce(max(pos),0)+1 m from docs where category_id=?", (cat,))[0]["m"]
-    did = ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos,deleted) values(?,?,?,?,?,?,?,?,?)",
-             (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos, PENDING if pending else 0))[0]
+    did = ex("insert into docs(title,category_id,filename,stored,size,uploader_id,created,pos,deleted,sha) values(?,?,?,?,?,?,?,?,?,?)",
+             (dest.stem, cat, dest.name, str(dest.relative_to(FILES)), n, uid, now(), pos, PENDING if pending else 0, hasher.hexdigest()))[0]
     if not pending:                                  # a document that waits for approval is NOT sent to SharePoint yet
         push_to_sharepoint(dest, catpath(cat))
     return did, "added"
@@ -1178,3 +1183,64 @@ def push_to_sharepoint(path, folder):
                 print("SharePoint upload failed:", e)
                 log("system", "SharePoint upload failed", f"{Path(path).name}: {e}"[:300])
     threading.Thread(target=work, daemon=True).start()
+
+
+# ------------------------------------------------------------------ duplicates, comments, last sign-in
+def file_sha(path, chunk=1024 * 1024):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def find_duplicate_of(did):
+    """Another document in the library with exactly the same content (or None)."""
+    r = q("select size, sha from docs where id=?", (did,))
+    if not r or not r[0]["sha"] or not r[0]["size"]:
+        return None
+    f = q("select d.id, d.title, coalesce(c.name,'') cat from docs d left join categories c on c.id=d.category_id where d.deleted=0 and d.sha=? and d.size=? and d.id!=? order by d.id limit 1", (r[0]["sha"], r[0]["size"], did))
+    return {"id": f[0]["id"], "title": f[0]["title"], "cat": f[0]["cat"]} if f else None
+
+
+def duplicate_groups(limit=200):
+    """Groups of library documents with identical content, biggest waste first. Fingerprints are made (and remembered) only for files that share a size."""
+    by = collections.defaultdict(list)
+    for r in q("select id, size, sha, stored from docs where deleted=0 and size>0"):
+        by[r["size"]].append(r)
+    groups = collections.defaultdict(list)
+    for size, lst in by.items():
+        if len(lst) < 2:
+            continue
+        for r in lst:
+            sha = r["sha"]
+            if not sha:
+                p = FILES / r["stored"]
+                if not p.exists():
+                    continue
+                sha = file_sha(p)
+                ex("update docs set sha=? where id=?", (sha, r["id"]))
+            groups[(size, sha)].append(r["id"])
+    out = []
+    for (size, sha), ids in groups.items():
+        if len(ids) > 1:
+            marks = ",".join("?" * len(ids))
+            out.append({"size": size, "wasted": size * (len(ids) - 1), "docs": q(DOC_SQL + f" where d.id in ({marks}) order by d.id", (0, *ids))})
+    out.sort(key=lambda g_: -g_["wasted"])
+    return out[:limit]
+
+
+def add_comment(did, uid, text):
+    return ex("insert into comments(doc_id,user_id,created,body) values(?,?,?,?)", (did, uid, now(), (text or "").strip()[:2000]))[0]
+
+
+def list_comments(did):
+    return q("select c.id, c.user_id, c.created, c.body, coalesce(u.name,'(removed user)') name from comments c left join users u on u.id=c.user_id where c.doc_id=? order by c.id", (did,))
+
+
+def last_logins():
+    flush()
+    return {r["user"]: r["m"] for r in q("select user, max(ts) m from logs where action in ('login (web)','login') group by user")}

@@ -188,7 +188,7 @@ def type_table():
 
 def me_payload(u):
     return {"user": core.user_dict(u), "prefs": core.prefs_of(u["id"]), "brand": brand(), "version": core.VERSION, "types": type_table(),
-            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "roles": list(ROLES), "statuses": core.STATUSES,
+            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "roles": list(ROLES), "idle_minutes": float(S.get("idle_minutes") or 60), "statuses": core.STATUSES,
             "status_colors": core.STATUS_COLORS, "chips": list(core.TYPE_CHIPS), "orders": {k: list(v) for k, v in core.ORDERS.items()}, "questions": core.QUESTIONS}
 
 
@@ -304,6 +304,21 @@ def create_app():
     @app.get("/")
     def index():
         return send_from_directory(WEB, "index.html")
+
+    @app.get("/sw.js")
+    def service_worker():
+        r = send_from_directory(WEB, "sw.js", mimetype="application/javascript")
+        r.headers["Cache-Control"] = "no-cache"
+        r.headers["Service-Worker-Allowed"] = "/"
+        return r
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        b = brand()
+        r = jsonify({"name": b["app_name"], "short_name": b["short_name"] or b["app_name"], "description": b["subtitle"], "start_url": "/", "scope": "/", "display": "standalone", "background_color": "#F3F6FA", "theme_color": b["navy"],
+                     "icons": [{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"}, {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}]})
+        r.mimetype = "application/manifest+json"
+        return r
 
     @app.get("/favicon.ico")
     def favicon():
@@ -491,7 +506,13 @@ def create_app():
     @app.get("/api/users")
     @api(admin=True)
     def users_list(u):
-        return jsonify({"users": [core.user_dict(r) for r in core.q("select * from users order by pending desc, id")]})
+        ll = core.last_logins()
+        out = []
+        for r in core.q("select * from users order by pending desc, id"):
+            x = core.user_dict(r)
+            x["last_login"] = ll.get(r["username"], "")
+            out.append(x)
+        return jsonify({"users": out})
 
     @app.post("/api/users")
     @api(admin=True)
@@ -791,7 +812,10 @@ def create_app():
     def approvals(u):
         st = 3 if request.args.get("state") == "rejected" else 2
         rows = core.q(core.DOC_SQL + " where d.deleted=? order by d.id", (u["id"], st))
-        return jsonify({"docs": [dd(r, u) for r in rows], "pending": core.pending_counts(u["id"])["docs"]})
+        out = [dd(r, u) for r in rows]
+        for x in out:
+            x["duplicate_of"] = core.find_duplicate_of(x["id"])
+        return jsonify({"docs": out, "pending": core.pending_counts(u["id"])["docs"]})
 
     @app.post("/api/approvals/approve")
     @api(admin=True)
@@ -807,6 +831,60 @@ def create_app():
         n = core.reject_docs(ids_of(d), u["id"], str(d.get("reason", "")).strip())
         core.log(u["username"], "reject upload (web)", f"{n} document(s)")
         return jsonify({"done": n})
+
+    @app.get("/api/docs/<int:did>/comments")
+    @api()
+    def comments_get(u, did):
+        get_doc_or_404(did, u)
+        return jsonify({"comments": [{"id": r["id"], "user_id": r["user_id"], "name": r["name"], "created": r["created"], "body": r["body"], "can_delete": bool(is_admin(u) or r["user_id"] == u["id"])} for r in core.list_comments(did)]})
+
+    @app.post("/api/docs/<int:did>/comments")
+    @api(write=True)
+    def comments_add(u, did):
+        get_doc_or_404(did, u)
+        text = str(body().get("body", "")).strip()
+        if not text:
+            raise ApiError("Write something first.")
+        core.add_comment(did, u["id"], text)
+        core.log(u["username"], "comment (web)", core.get_doc(did)["stored"])
+        return jsonify({"ok": True})
+
+    @app.delete("/api/comments/<int:cid>")
+    @api(write=True)
+    def comments_delete(u, cid):
+        r = core.q("select * from comments where id=?", (cid,))
+        if not r:
+            raise ApiError("Comment not found.", 404)
+        if not (is_admin(u) or r[0]["user_id"] == u["id"]):
+            raise ApiError("You can only delete your own comments.", 403)
+        core.ex("delete from comments where id=?", (cid,))
+        return jsonify({"ok": True})
+
+    @app.post("/api/docs/bulk")
+    @api(write=True)
+    def docs_bulk(u):
+        d = body()
+        status, review = d.get("status"), d.get("review")
+        add_tags = [t.strip() for t in str(d.get("tags_add", "")).split(",") if t.strip()]
+        if status in ("(none)",):
+            status = ""
+        if status is not None and status != "" and status not in core.STATUSES:
+            raise ApiError("Unknown status.")
+        if review not in (None, "") and not core.valid_date(str(review)):
+            raise ApiError("The review date must look like 2026-12-31.")
+
+        def apply(x):
+            if status is not None:
+                core.ex("update docs set status=? where id=?", (status, x["id"]))
+            if review is not None:
+                core.ex("update docs set review=? where id=?", (str(review), x["id"]))
+            if add_tags:
+                cur = [t.strip() for t in (x["tags"] or "").split(",") if t.strip()]
+                merged = cur + [t for t in add_tags if t.lower() not in {c.lower() for c in cur}]
+                core.ex("update docs set tags=? where id=?", (", ".join(merged)[:300], x["id"]))
+        res = each_doc(u, ids_of(d), apply)
+        core.log(u["username"], "bulk edit (web)", f"{res['done']} document(s)")
+        return jsonify(res)
 
     @app.post("/api/docs/move")
     @api(write=True)
@@ -891,7 +969,7 @@ def create_app():
         except ValueError as e:
             raise ApiError(str(e), 413)
         core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), f.filename)
-        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added")})
+        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added"), "duplicate_of": core.find_duplicate_of(did) if how == "added" else None})
 
     UID_RE = re.compile(r"^[a-f0-9]{16,40}$")
 
@@ -979,7 +1057,7 @@ def create_app():
             if not keep:
                 shutil.rmtree(dirp, ignore_errors=True)
         core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), name)
-        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added")})
+        return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added"), "duplicate_of": core.find_duplicate_of(did) if how == "added" else None})
 
     @app.post("/api/docs/<int:did>/version")
     @api(write=True)
@@ -1151,7 +1229,7 @@ def create_app():
             raise ApiError("This file cannot be edited here.")
         text = str(body().get("text", ""))
         p.write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n" if b"\r\n" in p.read_bytes()[:200000] else "\n").encode("utf-8"))
-        core.ex("update docs set size=? where id=?", (p.stat().st_size, did))
+        core.ex("update docs set size=?, sha=NULL where id=?", (p.stat().st_size, did))
         core.log(u["username"], "edit text (web)", d["stored"])
         return jsonify({"ok": True})
 
@@ -1298,7 +1376,7 @@ def create_app():
 
     # ------------------------------------------------------------------ admin
     ADMIN_KEYS = {"app_name", "short_name", "company", "subtitle", "tagline", "brand_red", "brand_blue", "brand_navy", "login_bg", "allow_signup", "require_approval", "email_domain",
-                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role", "upload_approval"}
+                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role", "upload_approval", "idle_minutes"}
 
     @app.get("/api/admin/settings")
     @api(admin=True)
@@ -1325,6 +1403,11 @@ def create_app():
                 v = str(max(1, min(365, int(v or 30))))
             if k == "max_mb":
                 v = str(max(0.0, float(v or 0)))
+            if k == "idle_minutes":
+                try:
+                    v = str(max(0.0, min(1440.0, float(v or 60))))
+                except ValueError:
+                    raise ApiError("Type the minutes as a number, 0 = never.")
             if k == "default_role" and v not in ("user", "viewer"):
                 raise ApiError("New accounts can start as User or Viewer.")
             if k == "email_domain":
@@ -1382,6 +1465,12 @@ def create_app():
         resp = send_file(tmp.name, mimetype="application/octet-stream", as_attachment=True, download_name=f"tdms_backup_{dt.date.today():%Y%m%d}.db")
         resp.call_on_close(lambda: Path(tmp.name).unlink(missing_ok=True))
         return resp
+
+    @app.get("/api/admin/duplicates")
+    @api(admin=True)
+    def admin_duplicates(u):
+        groups = core.duplicate_groups()
+        return jsonify({"groups": [{"size": g_["size"], "wasted": g_["wasted"], "docs": [dd(r, u) for r in g_["docs"]]} for g_ in groups], "wasted": sum(g_["wasted"] for g_ in groups)})
 
     @app.get("/api/admin/info")
     @api(admin=True)

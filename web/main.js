@@ -78,7 +78,7 @@ async function start(me) {
   S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = []; S.prev = null; S.countsSeen = false; S.counts = { pending_docs: 0, pending_users: 0, my_pending: 0, my_rejected: 0 };
   const t = S.prefs.theme || localStorage.getItem("tdms_theme") || "light"; applyTheme(t); localStorage.setItem("tdms_theme", t);
   renderShell();
-  clearInterval(S.poll); S.poll = setInterval(poll, 15000); refreshCounts();
+  clearInterval(S.poll); S.poll = setInterval(poll, 15000); refreshCounts(); startIdleWatch(me.idle_minutes);
   if (S.mustChange) setTimeout(mustChangeDialog, 400);
   else if (me.needs_question) setTimeout(() => toast("Tip: set a security question in My profile so you can recover your password.", ""), 1500);
 }
@@ -103,10 +103,22 @@ function profilePanel(anchor) {
   popNode(h("div", { class: "pmenu" },
     h("div", { class: "pm-head" }, avatar(u.id, 56, "&v=" + (u.has_photo ? 1 : 0)), h("div", { class: "pm-who" }, h("div", { class: "pm-name" }, u.name), h("div", { class: "muted small" }, u.email || u.username),
       h("div", { class: "pm-meta" }, roleBadge(u.role), u.emp_id ? h("span", { class: "muted small" }, "#" + u.emp_id) : "", u.dept ? h("span", { class: "muted small" }, u.dept) : ""))),
-    h("div", { class: "pm-list" }, item("settings", "My profile and settings", () => profileDialog()), item(dark ? "sun" : "moon", dark ? "Switch to light theme" : "Switch to dark theme", toggleTheme), item("keyboard", "Shortcuts and tips", helpDialog)),
+    h("div", { class: "pm-list" }, item("settings", "My profile and settings", () => profileDialog()), S.installPrompt ? item("download", "Install as an app", () => { S.installPrompt.prompt(); S.installPrompt = null; }) : null, item(dark ? "sun" : "moon", dark ? "Switch to light theme" : "Switch to dark theme", toggleTheme), item("keyboard", "Shortcuts and tips", helpDialog)),
     h("div", { class: "pm-list pm-foot" }, item("logout", "Sign out", logout, "danger"))), anchor, true);
 }
 function toggleTheme() { const t = theme() === "dark" ? "light" : "dark"; applyTheme(t); localStorage.setItem("tdms_theme", t); savePrefs({ theme: t }); renderShell(); }
+/* sign out after a while without any activity (set in Admin > Rules) */
+function startIdleWatch(min) {
+  clearInterval(S.idleTimer); S.idleMin = +min || 0;
+  if (!S.idleMin) return;
+  S.lastAct = Date.now();
+  if (!S.idleBound) { ["mousemove", "keydown", "click", "scroll", "touchstart", "wheel"].forEach(ev => window.addEventListener(ev, () => { S.lastAct = Date.now(); }, { passive: true, capture: true })); S.idleBound = true; }
+  S.idleTimer = setInterval(() => {
+    if (!S.me || !S.idleMin) return;
+    if (document.querySelector(".uploads")) { S.lastAct = Date.now(); return; }
+    if (Date.now() - S.lastAct > S.idleMin * 60000) { const mins = S.idleMin; clearInterval(S.idleTimer); post("/api/logout").catch(() => { }).finally(() => { S.me = null; showLogin(`You were signed out after ${mins} minute(s) without activity.`); }); }
+  }, Math.min(30000, Math.max(1000, S.idleMin * 60000 / 4)));
+}
 function logout() { post("/api/logout").catch(() => { }).finally(() => { S.me = null; showLogin(); }); }
 function renderTabs() {
   if (!S.tabBar) return;
@@ -155,7 +167,7 @@ async function poll() {
 }
 function helpDialog() {
   const rows = [["/", "Search all documents"], ["Ctrl + A", "Select all documents"], ["Delete", "Move the selected documents to the Recycle bin"], ["F2", "Rename the selected document"], ["Enter", "Open the selected documents in tabs"], ["Alt + Up / Down", "Move documents up / down in the folder"],
-    ["Shift + click", "Select a range"], ["Ctrl + click", "Add one to the selection"], ["Drag files in", "Drop files or a whole folder on the list to upload"], ["Right-click", "More actions on a document or a folder"], ["View > Preview panel", "Thumbnail and facts of the selected document"], ["Details", "Set a status and a review date; the Dashboard reminds you"], ["Approval", "Documents you add wait for an admin; see them under View > My uploads"], ["New folder", "Users can create folders and subfolders; admins also rename, move and delete them"]];
+    ["Shift + click", "Select a range"], ["Ctrl + click", "Add one to the selection"], ["Drag files in", "Drop files or a whole folder on the list to upload"], ["Right-click", "More actions on a document or a folder"], ["View > Preview panel", "Thumbnail and facts of the selected document"], ["Details", "Set a status and a review date; the Dashboard reminds you"], ["Approval", "Documents you add wait for an admin; see them under View > My uploads"], ["New folder", "Users can create folders and subfolders; admins also rename, move and delete them"], ["Drag a document", "Drop it on a folder in the list on the left to move it"], ["Comments", "Open a document and press Comments to discuss it with the team"], ["Copy link", "More > Copy link, or inside a document, to send a direct link"]];
   dialog({ title: "Shortcuts and tips", width: 640, body: h("table", { class: "mini" }, h("tbody", {}, ...rows.map(([k, t]) => h("tr", { style: { cursor: "default" } }, h("td", {}, h("b", { style: { color: "var(--blue)" } }, k)), h("td", {}, t))))) });
 }
 document.addEventListener("keydown", e => {
@@ -200,3 +212,6 @@ function bellPanel(anchor) {
     rows.length ? rows.map(([ic, t, lab, fn]) => h("div", { class: "nf-it", onclick: () => { closeMenu(); fn(); } }, h("span", { class: "nf-ic" }, svgIcon(ic, 18)), h("div", {}, h("div", {}, t), h("div", { class: "small", style: { color: "var(--blue)" } }, lab + " \u203A")))) :
       h("div", { class: "nf-empty" }, svgIcon("check", 22), h("div", {}, "You are all caught up."))), anchor, true);
 }
+
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); S.installPrompt = e; });
+if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => { }));
