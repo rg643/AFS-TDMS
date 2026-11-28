@@ -230,7 +230,7 @@ function renderToolbar() {
   }
 }
 function addItems() {
-  const items = [{ label: "Upload files...", fn: () => pickFiles(false) }, { label: "Upload a folder with its files...", fn: () => pickFiles(true) }, { label: "Add a web link...", fn: addLink }];
+  const items = [{ label: "Upload documents...", fn: () => uploadEntry(false) }, { label: "Upload a folder with its files...", fn: () => uploadEntry(true) }, { label: "Add a web link...", fn: addLink }];
   if (canWrite()) items.push({ sep: 1 }, { label: "New folder...", fn: () => newFolder(null) }, { label: "New subfolder...", dis: !(S.view === "folder" && S.cat), fn: () => newFolder(S.cat) });
   return items;
 }
@@ -293,7 +293,7 @@ function renderList() {
       S.q ? emptyState("search", "No matching documents", `Nothing matches "${S.q}". Try another word or clear the search.`) :
       S.chip !== "all" ? emptyState("file", "No documents of this type", "Choose All to see everything in this folder.") :
       bin ? emptyState("trash", "The Recycle bin is empty", "Deleted documents wait here before they are removed for good.") :
-      emptyState("upload", "This folder is empty", "Drag files or a whole folder here, or use Add.", S.view === "folder" ? iconBtn("upload", "Upload files", () => pickFiles(false), "primary") : null));
+      emptyState("upload", "This folder is empty", "Drag files or a whole folder here, or use Add.", S.view === "folder" ? iconBtn("upload", "Upload documents", () => uploadEntry(false), "primary") : null));
     renderToolbar(); updateDetails(); renderPreview(); return;
   }
   const arrow = k => S.order === k ? h("span", { class: "ar" }, S.desc ? "\u25BC" : "\u25B2") : "";
@@ -452,13 +452,15 @@ function setupDrop(zone) {
   let depth = 0, ov = null;
   const stop = e => { e.preventDefault(); e.stopPropagation(); };
   const hasFiles = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-  zone.addEventListener("dragenter", e => { if (!hasFiles(e)) return; stop(e); if (++depth === 1) { ov = h("div", { class: "drop" }, S.view === "folder" && S.cat ? `Drop to add to "${(folderById(S.cat) || {}).name}"` : "Open a folder first"); zone.appendChild(ov); } });
+  zone.addEventListener("dragenter", e => { if (!hasFiles(e)) return; stop(e); if (++depth === 1) { ov = h("div", { class: "drop" }, on("ud_enabled") ? "Drop to add documents" : S.view === "folder" && S.cat ? `Drop to add to "${(folderById(S.cat) || {}).name}"` : "Open a folder first"); zone.appendChild(ov); } });
   zone.addEventListener("dragover", e => { if (hasFiles(e)) { stop(e); e.dataTransfer.dropEffect = "copy"; } });
   zone.addEventListener("dragleave", e => { if (!hasFiles(e)) return; stop(e); if (--depth <= 0) { depth = 0; if (ov) ov.remove(); ov = null; } });
   zone.addEventListener("drop", async e => {
     if (!hasFiles(e)) return; stop(e); depth = 0; if (ov) ov.remove(); ov = null;
+    const items = await collectDropped(e.dataTransfer); if (!items.length) return;
+    if (on("ud_enabled")) return openUploadDialog(items, {});
     if (S.view !== "folder" || !S.cat) return toast("Open a folder first, then drop your files.");
-    const items = await collectDropped(e.dataTransfer); if (items.length) startUpload(items, S.cat);
+    startUpload(items, S.cat);
   });
 }
 async function collectDropped(dt) {
@@ -482,6 +484,8 @@ function upPanel() {
   Up.box = h("div", { class: "uploads" }, h("div", { class: "row" }, h("b", { class: "grow" }, "Uploading"), h("button", { class: "btn ghost sq", onclick: () => Up.box.remove() }, "\u2715")), Up.list);
   document.body.appendChild(Up.box);
 }
+const META_KEYS = ["version", "descr", "tags", "status", "review", "comment"];
+function appendMeta(f, it) { if (it.title) f.append("title", it.title); const m = it.meta || {}; META_KEYS.forEach(k => { if (m[k]) f.append(k, m[k]); }); }
 function xhrForm(url, fd, onprog) {
   return new Promise(res => {
     const x = new XMLHttpRequest(); x.open("POST", url); x.setRequestHeader("X-Requested-With", "tdms");
@@ -496,7 +500,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function randomId() { const a = new Uint8Array(12); (crypto.getRandomValues ? crypto.getRandomValues(a) : a.forEach((_, i) => a[i] = Math.random() * 256)); return [...a].map(b => b.toString(16).padStart(2, "0")).join(""); }
 async function sendFile(cat, it, mode, onprog, st) {
   if (it.file.size <= pieceMB() * 1024 * 1024) {
-    const f = new FormData(); f.append("cat", cat); f.append("file", it.file, it.file.name); f.append("relpath", it.rel || ""); if (mode) f.append("mode", mode);
+    const f = new FormData(); f.append("cat", cat); f.append("file", it.file, it.file.name); f.append("relpath", it.rel || ""); if (mode) f.append("mode", mode); appendMeta(f, it);
     return xhrForm("/api/upload", f, onprog);
   }
   const piece = pieceMB() * 1024 * 1024, total = Math.ceil(it.file.size / piece); st.uid = st.uid || randomId();
@@ -516,7 +520,7 @@ async function sendFile(cat, it, mode, onprog, st) {
     st.sent = true;
   }
   try {
-    const r = await fetch("/api/upload/finish", { method: "POST", headers: { "X-Requested-With": "tdms", "Content-Type": "application/json" }, body: JSON.stringify({ uid: st.uid, total, cat, filename: it.file.name, relpath: it.rel || "", mode: mode || "" }) });
+    const r = await fetch("/api/upload/finish", { method: "POST", headers: { "X-Requested-With": "tdms", "Content-Type": "application/json" }, body: JSON.stringify({ uid: st.uid, total, cat, filename: it.file.name, relpath: it.rel || "", mode: mode || "", title: it.title || "", ...(it.meta || {}) }) });
     let j = {}; try { j = await r.json(); } catch (e) { /* ignore */ }
     return { status: r.status, json: j };
   } catch (e) { return { status: 0, json: { error: "Network error." } }; }
@@ -529,8 +533,9 @@ function askConflict(name) {
       body: [h("p", {}, `"${name}" is already in this folder.`), h("label", { class: "sw" }, all, "Do the same for the other files that already exist")], buttons: [pick("skip"), pick("rename"), ...(isAdmin() ? [pick("version")] : [])] });
   });
 }
-async function startUpload(items, cat) {
+async function startUpload(items, cat, meta = {}) {
   const max = items.length; if (!max) return;
+  items.forEach(it => { it.meta = meta; });
   upPanel();
   let ok = 0, fail = 0, skipped = 0, sticky = null, pend = 0, dups = 0;
   for (const it of items) {
@@ -552,6 +557,7 @@ async function startUpload(items, cat) {
   }
   toast(`${ok} uploaded${pend ? `  -  ${pend} waiting for admin approval` : ""}${skipped ? `, ${skipped} skipped` : ""}${fail ? `, ${fail} failed` : ""}.`, fail ? "err" : "ok");
   refreshCounts();
+  if (cat && S.route === "library" && (S.view !== "folder" || S.cat !== cat) && ok - pend > 0) { await refreshLibrary(); selectFolder(cat); return; }
   if (dups) toast(`${dups} file(s) are identical to documents that are already in the library.`);
   setTimeout(() => { if (Up.box) Up.box.remove(); }, fail || dups ? 15000 : 2500);
   await refreshLibrary();
@@ -569,3 +575,75 @@ document.addEventListener("keydown", e => {
   else if (e.altKey && e.key === "ArrowDown" && canWrite()) { e.preventDefault(); moveSel(1); }
   else if (e.key === "Escape") clearSel();
 });
+
+
+/* ================================================================ the Add window ================================================================ */
+const STYLE_NAMES = { title: "Title Case", upper: "UPPER CASE", lower: "lower case", sentence: "Sentence case", none: "as you type them" };
+function folderSelect(value, withTop) {
+  const sel = h("select", { class: "inp" });
+  sel.fill = v => {
+    clear(sel); if (withTop) sel.appendChild(h("option", { value: "" }, "(top level)"));
+    const draw = (pid, d) => childrenOf(pid).forEach(f => { sel.appendChild(h("option", { value: f.id }, "\u00A0\u00A0".repeat(d) + (d ? "\u21B3 " : "") + f.name)); draw(f.id, d + 1); });
+    draw(null, 0); if (v !== undefined && v !== null) sel.value = String(v);
+  };
+  sel.fill(value); return sel;
+}
+async function uploadEntry(folder) {
+  if (!canWrite()) return;
+  if (on("ud_enabled")) { if (!S.folders.length) { try { await loadFolders(); } catch (e) { return toastErr(e); } } return openUploadDialog([], { pickFolder: !!folder }); }
+  pickFiles(folder);
+}
+function openUploadDialog(items = [], opts = {}) {
+  if (!canWrite()) return;
+  const files = [], F = k => on(k), needsVer = F("ud_version") && F("ud_req_version"), needsDesc = F("ud_desc") && F("ud_req_desc");
+  const defCat = opts.cat || (S.view === "folder" && S.cat) || (childrenOf(null)[0] || {}).id;
+  const folderSel = folderSelect(defCat, false), list = h("div", { class: "uf-list" }), count = h("span", { class: "muted small" });
+  const pickIn = (dir) => { const i = h("input", { type: "file", multiple: true, style: { display: "none" } }); if (dir) i.webkitdirectory = true; i.onchange = () => { addItems([...i.files].map(f => ({ file: f, rel: f.webkitRelativePath || "" }))); i.remove(); }; document.body.appendChild(i); i.click(); };
+  function addItems(more) {
+    for (const it of more) { if (files.some(f => f.file === it.file && f.rel === it.rel)) continue; files.push({ file: it.file, rel: it.rel || "", title: namesFormat(it.file.name.replace(/\.[^.]*$/, "")) }); }
+    draw();
+  }
+  function draw() {
+    clear(list); zone.classList.toggle("hidden", files.length > 0); more.classList.toggle("hidden", !files.length);
+    files.forEach((f, i) => {
+      const ext = (f.file.name.match(/\.[^.]*$/) || [""])[0], ft = core_type(ext);
+      const inp = h("input", { class: "inp", value: f.title, title: f.rel || f.file.name, onchange: () => { f.title = namesFormat(inp.value.trim()) || f.title; inp.value = f.title; } });
+      list.appendChild(h("div", { class: "uf" }, fileIcon(ft, 24), h("div", { class: "grow" }, h("div", { class: "row", style: { gap: "4px" } }, inp, h("span", { class: "muted small", style: { whiteSpace: "nowrap" } }, ext)), f.rel ? h("div", { class: "muted small", style: { marginTop: "2px" } }, f.rel) : null),
+        h("span", { class: "muted small", style: { whiteSpace: "nowrap", width: "70px", textAlign: "right" } }, fmtSize(f.file.size)), h("button", { class: "btn sq ghost", title: "Remove", onclick: () => { files.splice(i, 1); draw(); } }, svgIcon("x", 16))));
+    });
+    count.textContent = files.length ? `${files.length} file(s)  \u00B7  ${fmtSize(files.reduce((a, f) => a + f.file.size, 0))}` : "";
+  }
+  const core_type = ext => { const e = ext.toLowerCase(); return ({ ".pdf": "pdf", ".doc": "doc", ".docx": "doc", ".xls": "xls", ".xlsx": "xls", ".xlsm": "xls", ".csv": "csv", ".ppt": "ppt", ".pptx": "ppt", ".png": "img", ".jpg": "img", ".jpeg": "img", ".gif": "img", ".webp": "img", ".mp4": "vid", ".mov": "vid", ".mp3": "aud", ".wav": "aud", ".zip": "zip", ".txt": "txt", ".dwg": "cad", ".dxf": "cad" })[e] || "file"; };
+  const zone = h("div", { class: "uzone", ondragover: e => { e.preventDefault(); zone.classList.add("over"); }, ondragleave: () => zone.classList.remove("over"), ondrop: async e => { e.preventDefault(); zone.classList.remove("over"); addItems(await collectDropped(e.dataTransfer)); } },
+    h("div", { class: "uz-ic" }, svgIcon("upload", 30)), h("div", { class: "uz-t" }, "Drag files or a folder here"), h("div", { class: "muted" }, "or"),
+    h("div", { class: "row", style: { justifyContent: "center" } }, h("button", { class: "btn primary", type: "button", onclick: () => pickIn(false) }, "Choose files"), h("button", { class: "btn", type: "button", onclick: () => pickIn(true) }, "Choose a folder")));
+  const more = h("button", { class: "btn hidden", type: "button", onclick: () => pickIn(false) }, svgIcon("plus", 16), "Add more files");
+  // where to save + new folder
+  const nfName = h("input", { class: "inp", placeholder: "New folder name" }), nfParent = folderSelect(defCat, true), nf = h("div", { class: "nfbox hidden" }, h("div", { class: "form2" }, field("NEW FOLDER NAME", nfName), field("INSIDE", nfParent)),
+    h("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "8px" } }, h("button", { class: "btn", type: "button", onclick: () => nf.classList.add("hidden") }, "Cancel"), h("button", { class: "btn primary", type: "button", onclick: async e => {
+      const name = nfName.value.trim(); if (!name) return toast("Type the folder name.", "err");
+      try { const r = await post("/api/folders", { name, parent_id: nfParent.value ? +nfParent.value : null }); await loadFolders(); if (L.root && L.root.isConnected) renderTree(); folderSel.fill(r.id); nfParent.fill(r.id); nfName.value = ""; nf.classList.add("hidden"); toast(`Folder "${name}" created.`, "ok"); } catch (x) { toastErr(x); }
+    } }, "Create folder")));
+  const where = [field("SAVE IN FOLDER", folderSel), F("ud_newfolder") ? h("div", { style: { margin: "6px 0 0" } }, h("button", { class: "btn ghost", type: "button", style: { paddingLeft: "6px" }, onclick: () => { nf.classList.toggle("hidden"); nfName.focus(); } }, svgIcon("folderplus", 16), "Create a new folder"), nf) : null];
+  // details
+  const fv = h("input", { class: "inp", value: feat("ud_default_version") || "", placeholder: "for example 1.0 or Rev A" }), fst = select([["", "(no status)"], ...S.statuses.filter(s => s !== "(none)")], ""), frv = h("input", { class: "inp", type: "date" });
+  const ftg = h("input", { class: "inp", placeholder: "e-plan, wiring, rev C" }), fds = h("textarea", { class: "inp", rows: 2, placeholder: "What is this document about?" }), fcm = h("textarea", { class: "inp", rows: 2, placeholder: "A first comment for the team (optional)" });
+  const req = (t, r) => t + (r ? " *" : "");
+  const detail = F("ud_enabled") ? h("div", {}, h("div", { class: "uf-sec" }, "DETAILS  (apply to all the files above)"),
+    h("div", { class: "form2" }, F("ud_version") ? field(req("VERSION", needsVer), fv) : null, F("ud_status") ? field("STATUS", fst) : null, F("ud_review") ? field("REVIEW DATE", frv) : null, F("ud_tags") ? field("TAGS", ftg) : null),
+    F("ud_desc") ? field(req("DESCRIPTION", needsDesc), fds) : null, F("ud_comment") ? field("COMMENT", fcm) : null) : null;
+  const note = h("div", { class: "muted small", style: { margin: "10px 0 0" } }, `File names are written in ${STYLE_NAMES[feat("name_format")] || "Title Case"} (set by your admin). You can still edit a name above.`, S.me.role === "user" && S.brand.upload_approval ? "  An administrator approves new documents before others see them." : "");
+  const dlg = dialog({ title: "Add documents", width: 760, body: [zone, list, h("div", { class: "row", style: { margin: "8px 0 4px" } }, more, h("span", { class: "spacer" }), count), h("div", { class: "uf-sec" }, "WHERE TO SAVE"), ...where, detail, note],
+    buttons: [{ text: "Cancel" }, { text: "Upload", kind: "primary", fn: async () => {
+      if (!files.length) throw new Error("Choose at least one file.");
+      const cat = +folderSel.value; if (!cat) throw new Error("Choose the folder to save in.");
+      if (!files.every(f => f.title.trim())) throw new Error("Every file needs a name.");
+      const meta = {};
+      if (F("ud_enabled")) { if (needsVer && !fv.value.trim()) throw new Error("Please type the version."); if (needsDesc && !fds.value.trim()) throw new Error("Please type a short description."); meta.version = F("ud_version") ? fv.value.trim() : ""; meta.status = F("ud_status") ? fst.value : ""; meta.review = F("ud_review") ? frv.value : ""; meta.tags = F("ud_tags") ? ftg.value.trim() : ""; meta.descr = F("ud_desc") ? fds.value.trim() : ""; meta.comment = F("ud_comment") ? fcm.value.trim() : ""; }
+      const upItems = files.map(f => ({ file: f.file, rel: f.rel, title: f.title.trim() }));
+      setTimeout(() => startUpload(upItems, cat, meta), 50);
+    } }] });
+  if (items.length) addItems(items);
+  if (opts.pickFolder) setTimeout(() => pickIn(true), 80);
+  return dlg;
+}

@@ -132,10 +132,19 @@ async function renderDashboard(root) {
   const chart = (name, hh, extra = "") => h("img", { class: "chartimg", dataset: { chart: name, h: hh, extra }, alt: "" });
   const docTable = (rows, cols2) => !rows.length ? h("div", { class: "muted small", style: { padding: "10px 4px" } }, "Nothing here yet.") :
     h("table", { class: "mini" }, h("tbody", {}, ...rows.map(x => h("tr", { class: x.late ? "late" : "", onclick: () => openDoc(x) }, h("td", {}, fileIcon(x.type, 18), x.title), ...cols2(x).map(c => h("td", { class: "muted" }, c))))));
-  add(wrap, pageHead("Dashboard", `Overview of the document library  \u00B7  signed in as ${S.me.name}`, iconBtn("refresh", "Refresh", () => renderDashboard(root))),
+  const feedBox = h("div", { class: "feed2" });
+  S.renderFeed = () => { clear(feedBox); const evs = S.ev.items.slice(0, 8); if (!evs.length) feedBox.appendChild(h("div", { class: "muted", style: { padding: "14px 4px" } }, on("notif_enabled") ? "Nothing new yet. New documents and folders appear here." : "Notifications are switched off by your admin.")); evs.forEach(e => feedBox.appendChild(feedItem(e))); };
+  S.renderFeed();
+  const hr = new Date().getHours(), greet = hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening";
+  const hero = h("div", { class: "hero2" }, h("div", { class: "hero2-l" }, h("div", { class: "hero2-g" }, greet + ","), h("div", { class: "hero2-n" }, S.me.name), h("div", { class: "hero2-s" }, new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + "   \u00B7   ", roleBadge(S.me.role)),
+    h("div", { class: "hero2-p" }, S.me.role === "viewer" ? "Browse, read and download the team's documents." : "Add documents, keep them organised and see what the team is working on.")),
+    h("div", { class: "hero2-a" }, canWrite() ? h("button", { class: "btn primary big", onclick: () => uploadEntry(false) }, svgIcon("upload", 18), "Upload documents") : null, h("button", { class: "btn big hero-b", onclick: () => go("library") }, svgIcon("folder", 18), "Open the library"),
+      isAdmin() && S.counts.pending_docs ? h("button", { class: "btn big hero-b", onclick: () => go("approvals") }, svgIcon("inbox", 18), `${S.counts.pending_docs} to approve`) : null, h("button", { class: "btn big hero-b", title: "Refresh", onclick: () => renderDashboard(root) }, svgIcon("refresh", 18))));
+  add(wrap, hero,
     h("div", { class: "tiles" }, ...d.tiles.filter(t => !(isViewer() && (t.key === "trash" || t.key === "mine"))).map(t => h("div", { class: "card tile", style: { "--c": TILE_COLORS[t.key] || "var(--blue)" } },
       h("div", { class: "ti" }, svgIcon(TILE_ICONS[t.key] || "file", 22)), h("div", { class: "tb" }, h("div", { class: "l" }, t.label), h("div", { class: "v" }, String(t.value)),
         h("div", { class: "s" + (t.sub.startsWith("\u25B2") ? " up" : t.sub.startsWith("\u25BC") ? " down" : "") }, t.sub))))),
+    on("notif_enabled") ? h("div", { class: "card", style: { marginBottom: "12px" } }, h("div", { class: "row" }, h("h3", { style: { margin: 0 } }, "What is new"), h("span", { class: "spacer" }), S.ev.unread ? h("button", { class: "btn ghost", onclick: () => markAllRead() }, "Mark all read") : null), feedBox) : null,
     h("div", { class: "grid3" }, h("div", { class: "card" }, h("h3", {}, "Recently opened by you"), docTable(d.opened, x => [x.cat])), h("div", { class: "card" }, h("h3", {}, "Your favorites"), docTable(d.favorites, x => [x.cat])),
       h("div", { class: "card" }, h("h3", {}, "Most opened"), docTable(d.most, x => [x.opens + "x"]))),
     h("div", { class: "grid2" }, h("div", { class: "card" }, h("h3", {}, "Uploads in the last 14 days"), chart("uploads", 190)),
@@ -146,6 +155,7 @@ async function renderDashboard(root) {
     h("div", { class: "grid2" }, h("div", { class: "card" }, h("h3", {}, "Review due in the next 30 days"), docTable(d.review, x => [(x.late ? "overdue  " : "") + x.review, x.status])), h("div", { class: "card" }, h("h3", {}, "Documents by status"), chart("status", 190))),
     d.activity ? h("div", { class: "card" }, h("h3", {}, "Recent activity"), h("table", { class: "mini" }, h("tbody", {}, ...d.activity.map(a => h("tr", { style: { cursor: "default" } }, h("td", { class: "muted" }, fmtDate(a.ts)), h("td", {}, a.user), h("td", {}, a.action + "   " + a.detail)))))) : null);
   layoutCharts(wrap, d.stamp);
+  $$(".tile .v", wrap).forEach(el => countUp(el, el.textContent));
 }
 function layoutCharts(wrap, stamp) {
   const draw = () => $$("img[data-chart]", wrap).forEach(img => {
@@ -171,7 +181,7 @@ async function renderUsers(root) {
     h("td", {}, roleBadge(u.role)),
     h("td", {}, u.pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, "WAITING") : u.active ? h("span", { class: "badge", style: { "--c": "#1D8348" } }, "ACTIVE") : h("span", { class: "badge", style: { "--c": "#90A4AE" } }, "DISABLED")),
     h("td", {}, u.pending ? [act("Approve...", () => approveDialog(u, () => { renderUsers(root); refreshBadges(); }), "primary"), act("Reject", async () => { if (await confirmDlg("Reject", `Reject the request from ${u.name}?`, "Reject", "danger")) run(`/api/users/${u.id}/reject`, {}, "Rejected.")(); })] :
-      [act("Edit", () => profileDialog(u, () => renderUsers(root))), act("Reset password", () => resetPassword(u)), u.id === S.me.id ? "" : act(u.active ? "Disable" : "Enable", run(`/api/users/${u.id}/toggle`, {}, "Done.")),
+      [act("Edit", () => profileDialog(u, () => renderUsers(root))), act("Activity", () => { S.activityUser = u.emp_id || u.name; go("activity"); }), act("Reset password", () => resetPassword(u)), u.id === S.me.id ? "" : act(u.active ? "Disable" : "Enable", run(`/api/users/${u.id}/toggle`, {}, "Done.")),
         u.id === S.me.id ? "" : act("Delete", async () => { if (await confirmDlg("Delete user", `Delete ${u.name}? Their documents stay in the library.`, "Delete", "danger")) run(`/api/users/${u.id}/delete`, {}, "Deleted.")(); })])));
   add(root, pageHead("Users", "People who can sign in, and what they can do", pending ? h("span", { class: "badge", style: { "--c": "#F28C1E" } }, pending + " waiting for approval") : "", iconBtn("plus", "Add user", () => addUserDialog(() => renderUsers(root)), "primary")),
     h("div", { class: "card flush" },
@@ -188,17 +198,41 @@ function resetPassword(u) {
 }
 
 /* ================================================================ activity ================================================================ */
-async function renderActivity(root) {
+const KINDS = [["all", "All activity"], ["login", "Sign-ins"], ["upload", "Uploads and versions"], ["access", "Opened / downloaded"], ["delete", "Deleted / restored"], ["approval", "Approvals"], ["folder", "Folders"], ["account", "Accounts"], ["settings", "Settings"]];
+const KIND_COLORS = { login: "#2E6DB4", upload: "#1D8348", access: "#8E44AD", delete: "#D32F2F", approval: "#00897B", folder: "#D4A017", account: "#3F51B5", settings: "#607D8B", other: "#90A4AE" };
+async function renderActivity(root, tab = "audit") {
   clear(root);
-  const tb = h("tbody"), q = h("input", { type: "search", placeholder: "Search the log...", oninput: debounce(load, 250) }), count = h("span", { class: "muted small" });
+  const tabs = pills([["audit", "Audit trail"], ["sessions", "Sign-in sessions"]], tab, v => renderActivity(root, v));
+  if (tab === "sessions") return renderSessions(root, tabs);
+  const q = h("input", { type: "search", placeholder: "Search anything...", oninput: debounce(load, 300) }), who = h("input", { class: "inp", placeholder: "Person, ID or email", value: S.activityUser || "", style: { width: "190px" }, oninput: debounce(load, 300) });
+  const kind = select(KINDS, "all"), from = h("input", { class: "inp", type: "date", style: { width: "150px" }, onchange: load }), to = h("input", { class: "inp", type: "date", style: { width: "150px" }, onchange: load }), count = h("span", { class: "muted small" }), tb = h("tbody");
+  kind.style.width = "200px"; kind.onchange = load; S.activityUser = "";
   let rows = [];
   async function load() {
-    try { rows = (await api("/api/admin/activity?q=" + encodeURIComponent(q.value.trim()))).rows; } catch (e) { return toastErr(e); }
-    clear(tb); rows.forEach(r => tb.appendChild(h("tr", {}, h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, fmtDate(r.ts)), h("td", {}, r.user), h("td", {}, r.action), h("td", { class: "muted" }, r.detail)))); count.textContent = rows.length + " entries";
+    const p_ = new URLSearchParams({ q: q.value.trim(), user: who.value.trim(), kind: kind.value, from: from.value, to: to.value });
+    try { rows = (await api("/api/admin/activity?" + p_)).rows; } catch (e) { return toastErr(e); }
+    clear(tb);
+    rows.forEach(r => tb.appendChild(h("tr", {}, h("td", { style: { whiteSpace: "nowrap" }, class: "muted" }, fmtDateTime(r.ts)),
+      h("td", {}, h("span", { class: "row", style: { gap: "8px" } }, r.uid ? avatar(r.uid, 24) : null, h("span", {}, h("b", {}, r.name || r.user), r.emp_id ? h("span", { class: "muted small" }, "  #" + r.emp_id) : null))),
+      h("td", {}, h("span", { class: "badge soft", style: { "--c": KIND_COLORS[r.kind] || KIND_COLORS.other } }, r.action)),
+      h("td", { style: { maxWidth: "340px" } }, r.ref && r.doc_title ? h("a", { style: { cursor: "pointer" }, onclick: () => openDoc({ id: r.ref, title: r.doc_title, type: "file" }) }, r.doc_title) : h("span", { class: "muted" }, r.detail)),
+      h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, r.ip || "-"), h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, r.device || "-"), h("td", { class: "muted small" }, r.sid ? h("code", {}, r.sid) : ""))));
+    count.textContent = `${rows.length} entr${rows.length === 1 ? "y" : "ies"}` + (rows.length >= 2000 ? " (latest 2000 shown)" : "");
   }
-  add(root, pageHead("Activity", "Everything that happens in the library, newest first", h("div", { class: "search" }, q), iconBtn("download", "Export CSV", () => { const c = s => '"' + String(s ?? "").replace(/"/g, '""') + '"'; downloadText("TDMS_activity.csv", "\ufeff" + ["Time,User,Action,Detail", ...rows.map(r => [r.ts, r.user, r.action, r.detail].map(c).join(","))].join("\r\n")); })),
-    h("div", { class: "card flush" }, h("div", { class: "row", style: { padding: "10px 16px" } }, count), h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["Time", "User", "Action", "Detail"].map(x => h("th", {}, x)))), tb))));
+  add(root, pageHead("Activity", "Who signed in, from where, and what they opened, added or changed", tabs, iconBtn("download", "Export CSV", () => { const c = s => '"' + String(s ?? "").replace(/"/g, '""') + '"'; downloadText("TDMS_audit_trail.csv", "\ufeff" + ["Time,Person,Employee ID,Action,Document,Detail,IP address,Device,Session", ...rows.map(r => [r.ts, r.name || r.user, r.emp_id, r.action, r.doc_title, r.detail, r.ip, r.device, r.sid].map(c).join(","))].join("\r\n")); })),
+    h("div", { class: "card flush" }, h("div", { class: "filters" }, h("div", { class: "search" }, q), who, kind, h("span", { class: "muted small" }, "from"), from, h("span", { class: "muted small" }, "to"), to, h("span", { class: "spacer" }), count),
+      h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["Time", "Person", "Action", "Document / detail", "IP address", "Device", "Session"].map(x => h("th", {}, x)))), tb))));
   load();
+}
+async function renderSessions(root, tabs) {
+  let r; try { r = await api("/api/admin/sessions"); } catch (e) { return toastErr(e); }
+  const online = r.sessions.filter(s => s.online).length;
+  const rows = r.sessions.map(s => h("tr", {}, h("td", {}, h("span", { class: "row", style: { gap: "8px" } }, avatar(s.user_id, 28), h("span", {}, h("b", {}, s.name), s.emp_id ? h("span", { class: "muted small" }, "  #" + s.emp_id) : null))), h("td", {}, roleBadge(s.role || "user")),
+    h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, s.ip || "-"), h("td", { class: "muted" }, s.device || "-"), h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, fmtDateTime(s.login_at)), h("td", { class: "muted", style: { whiteSpace: "nowrap" } }, s.online ? "now" : fmtDateTime(s.logout_at || s.last_seen)),
+    h("td", {}, s.online ? h("span", { class: "badge", style: { "--c": "#1D8348" } }, s.current ? "YOU - ONLINE" : "ONLINE") : s.revoked ? h("span", { class: "badge", style: { "--c": "#D32F2F" } }, "ENDED BY ADMIN") : s.logout_at ? h("span", { class: "badge", style: { "--c": "#90A4AE" } }, "SIGNED OUT") : h("span", { class: "badge", style: { "--c": "#F28C1E" } }, "INACTIVE")),
+    h("td", {}, s.online && !s.current ? h("button", { class: "btn dangerline", onclick: async () => { if (await confirmDlg("End session", `Sign ${s.name} out now?\\nThey must sign in again.`, "End session", "danger")) { try { await post(`/api/admin/sessions/${s.sid}/revoke`); toast("Session ended.", "ok"); renderActivity(root, "sessions"); } catch (e) { toastErr(e); } } } }, "End session") : "")));
+  add(root, pageHead("Activity", `${online} online now  \u00B7  every sign-in with its address and device`, tabs, iconBtn("refresh", "Refresh", () => renderActivity(root, "sessions"))),
+    h("div", { class: "card flush" }, h("div", { style: { overflow: "auto" } }, h("table", { class: "table2" }, h("thead", {}, h("tr", {}, ...["Person", "Role", "IP address", "Device", "Signed in", "Last active / signed out", "Status", ""].map(x => h("th", {}, x)))), h("tbody", {}, ...rows)))));
 }
 
 /* ================================================================ admin ================================================================ */
@@ -212,9 +246,10 @@ async function renderAdmin(root) {
   const sw = (k, label) => { const c = h("input", { type: "checkbox", checked: s[k] === "1" }); c.get = () => (c.checked ? "1" : "0"); return [h("label", { class: "sw" }, c, label), c]; };
   const cUpl = h("input", { type: "checkbox", checked: s.upload_approval !== "0" });
   const [swSign, cSign] = sw("allow_signup", "Allow people to create their own account"), [swAppr, cAppr] = sw("require_approval", "New accounts must be approved by an admin");
+  const fc = featureCards(s);
   const save = async () => {
-    const body = {}; for (const [k, v] of Object.entries(f)) body[k] = v.get ? v.get() : v.value; body.allow_signup = cSign.get(); body.require_approval = cAppr.get(); body.upload_approval = cUpl.checked ? "1" : "0";
-    try { const r = await post("/api/admin/settings", body); applyBrand(r.brand); renderShell(); toast("Settings saved.", "ok"); } catch (e) { toastErr(e); }
+    const body = {}; for (const [k, v] of Object.entries(f)) body[k] = v.get ? v.get() : v.value; body.allow_signup = cSign.get(); body.require_approval = cAppr.get(); body.upload_approval = cUpl.checked ? "1" : "0"; Object.assign(body, fc.collect());
+    try { const r = await post("/api/admin/settings", body); applyBrand(r.brand); try { S.features = (await api("/api/me")).features; } catch (x) { /* ignore */ } renderShell(); toast("Settings saved.", "ok"); } catch (e) { toastErr(e); }
   };
   const logoIn = h("input", { type: "file", accept: "image/*", style: { display: "none" }, onchange: async () => { const fd = new FormData(); fd.append("file", logoIn.files[0]); try { await api("/api/admin/logo", { method: "POST", form: fd }); toast("Logo changed.", "ok"); S.logoBust = Date.now(); renderShell(); } catch (e) { toastErr(e); } } });
   add(root, pageHead("Admin", "Branding, rules and server"), h("div", { class: "grid2e" },
@@ -222,7 +257,8 @@ async function renderAdmin(root) {
       h("div", { class: "form2" }, field("ACCENT COLOUR", f.brand_red), field("BLUE", f.brand_blue)), h("div", { class: "form2" }, field("NAVY (table headings)", f.brand_navy), field("LOGIN BACKGROUND", f.login_bg)),
       h("div", { class: "row", style: { marginTop: "14px" } }, h("button", { class: "btn", onclick: () => logoIn.click() }, "Change logo..."), h("button", { class: "btn ghost", onclick: async () => { await api("/api/admin/logo", { method: "DELETE" }); toast("Logo reset.", "ok"); S.logoBust = Date.now(); renderShell(); } }, "Use the default logo"), logoIn)),
     h("div", { class: "card" }, h("h3", {}, "Rules"), swSign, swAppr, h("label", { class: "sw" }, cUpl, "Documents added by users must be approved by an admin before others see them"), field("NEW ACCOUNTS START AS", f.default_role, "You can still choose the role when you approve an account."), field("ONLY THIS EMAIL DOMAIN CAN SIGN UP", f.email_domain, "Leave empty to allow any domain"), h("div", { class: "form2" }, field("MINIMUM PASSWORD LENGTH", f.min_password), field("MAX FILE SIZE (MB)", f.max_mb)), h("div", { class: "form2" }, field("KEEP DELETED DOCUMENTS (DAYS)", f.trash_days), field("SIGN OUT AFTER (MINUTES)", f.idle_minutes, "No activity for this long = signed out. 0 = never.")))),
-    h("div", { class: "row", style: { margin: "0 0 12px" } }, h("button", { class: "btn primary big", onclick: save }, "Save settings")),
+    h("div", { class: "grid3 fgrid" }, ...fc.cards),
+    h("div", { class: "row", style: { margin: "0 0 12px" } }, h("button", { class: "btn primary big", onclick: save }, "Save settings"), h("span", { class: "muted small" }, "One button saves everything on this page.")),
     h("div", { class: "grid2e" },
       h("div", { class: "card" }, h("h3", {}, "Share with your team"), h("p", { class: "muted" }, "Team members open one of these addresses in their browser (same network or VPN):"), ...info.urls.map(u => h("div", {}, h("span", { class: "url" }, u))), info.urls.length ? "" : h("div", { class: "muted" }, "No network address found."),
         h("p", { class: "muted small", style: { marginTop: "12px" } }, "From any other network (home, travelling, mobile data) start Start_Public_Link.bat or Start_Tailscale_Funnel.bat on the server and share the https link it shows - see README_WEB.txt.")),
@@ -341,4 +377,42 @@ function duplicateCard() {
     } catch (e) { clear(out); toastErr(e); } finally { btn.disabled = false; }
   });
   return h("div", { class: "card", style: { marginTop: "12px" } }, h("h3", {}, "Duplicate files"), btn, out);
+}
+
+/* ================================================================ admin switches ================================================================ */
+const FEATURE_GROUPS = [
+  { title: "Notifications", sub: "What everybody sees when something new is added", icon: "bell", master: "notif_enabled", items: [
+    ["notif_enabled", "switch", "Show what is new to everybody", "New documents and folders appear in the bell list and on the Dashboard."],
+    ["notif_popup", "switch", "Pop-up message for each new item", "A small message in the top right corner."],
+    ["notif_docs", "switch", "New documents"], ["notif_folders", "switch", "New folders"], ["notif_versions", "switch", "New versions of documents"],
+    ["notif_role_admin", "switch", "Administrators receive them"], ["notif_role_user", "switch", "Users receive them"], ["notif_role_viewer", "switch", "Viewers receive them"],
+    ["notif_own", "switch", "Also show people their own actions"], ["notif_retention", "number", "Keep the list for (days)", "0 = keep forever."]] },
+  { title: "Add window (upload)", sub: "The window that opens when someone adds documents", icon: "upload", master: "ud_enabled", items: [
+    ["ud_enabled", "switch", "Use the details window", "Off = files upload at once into the open folder."],
+    ["ud_newfolder", "switch", "Allow creating a new folder inside it"], ["ud_version", "switch", "Version field"], ["ud_req_version", "switch", "Version is required"],
+    ["ud_desc", "switch", "Description field"], ["ud_req_desc", "switch", "Description is required"], ["ud_tags", "switch", "Tags field"], ["ud_status", "switch", "Status field"],
+    ["ud_review", "switch", "Review date field"], ["ud_comment", "switch", "Comment field", "The first comment on the document."], ["ud_default_version", "text", "Starting version text", "For example 1.0"],
+    ["name_format", "select", "File name style", "Applied to every uploaded file name.", [["title", "Title Case - Wiring Manual V1"], ["upper", "UPPER CASE"], ["lower", "lower case"], ["sentence", "Sentence case"], ["none", "Keep as typed"]]],
+    ["name_acronyms", "text", "Words that stay in capitals", "Separate with commas, like PLC, SOP, HMI."]] },
+  { title: "Audit trail", sub: "What is recorded about who does what", icon: "shield", items: [
+    ["log_ip", "switch", "Record the IP address", "Shown on the Activity page."], ["log_device", "switch", "Record the device and browser"], ["log_access", "switch", "Record who opens and downloads documents"],
+    ["log_retention", "number", "Keep the log for (days)", "0 = keep forever."]] }
+];
+function featureCards(s) {
+  const get = {};
+  const cards = FEATURE_GROUPS.map(g => {
+    const rows = [], els = {};
+    g.items.forEach(([k, type, label, help, opts]) => {
+      let ctl;
+      if (type === "switch") { const c = h("input", { type: "checkbox", checked: s[k] === "1" }); ctl = h("label", { class: "tg" }, c, h("span", { class: "tgs" })); get[k] = () => c.checked ? "1" : "0"; els[k] = c; }
+      else if (type === "select") { const sel = select(opts, s[k]); sel.style.width = "210px"; get[k] = () => sel.value; ctl = sel; }
+      else { const i = h("input", { class: "inp", value: s[k] ?? "", style: { width: type === "number" ? "100px" : "210px" } }); get[k] = () => i.value; ctl = i; }
+      rows.push(h("div", { class: "frow" }, h("div", { class: "grow" }, h("div", {}, label), help ? h("div", { class: "muted small" }, help) : null), ctl));
+    });
+    const dim = () => { const m = g.master && els[g.master]; rows.forEach((r, i) => { if (g.items[i][0] !== g.master) r.classList.toggle("dim", !!m && !m.checked); }); };
+    if (g.master) els[g.master].addEventListener("change", dim);
+    dim();
+    return h("div", { class: "card" }, h("div", { class: "row", style: { marginBottom: "8px", alignItems: "flex-start" } }, h("span", { class: "fico" }, svgIcon(g.icon, 20)), h("div", {}, h("h3", { style: { margin: 0 } }, g.title), h("div", { class: "muted small" }, g.sub))), ...rows);
+  });
+  return { cards, collect: () => Object.fromEntries(Object.entries(get).map(([k, f]) => [k, f()])) };
 }

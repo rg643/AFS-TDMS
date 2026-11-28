@@ -117,15 +117,64 @@ def note_fail(ip):
         _FAILS.setdefault(ip, []).append(time.time())
 
 
+_TOUCH = {}
+
+
 def current_user():
     uid = session.get("uid")
     if not uid:
         return None
     r = core.q("select * from users where id=? and active=1 and pending=0", (uid,))
-    return r[0] if r else None
+    if not r:
+        return None
+    sid = session.get("sid")
+    if sid:
+        if not core.session_ok(sid):                      # an admin ended this session, or it was signed out
+            return None
+        t = time.time()
+        if t - _TOUCH.get(sid, 0) > 30:
+            _TOUCH[sid] = t
+            core.session_touch(sid)
+    return r[0]
 
 
 ROLES = ("user", "viewer", "admin")
+# every option the admin can change (Admin > Notifications / Upload window / Audit trail). Values are "1" / "0" or text.
+FEATURES = {"notif_enabled": "1", "notif_popup": "1", "notif_docs": "1", "notif_folders": "1", "notif_versions": "1", "notif_own": "0", "notif_role_admin": "1", "notif_role_user": "1", "notif_role_viewer": "1", "notif_retention": "30",
+            "ud_enabled": "1", "ud_newfolder": "1", "ud_version": "1", "ud_desc": "1", "ud_tags": "1", "ud_status": "1", "ud_review": "0", "ud_comment": "1", "ud_req_desc": "0", "ud_req_version": "0", "ud_default_version": "1.0",
+            "name_format": "title", "name_acronyms": "PLC,HMI,SOP,ICD,IO,FAT,SAT,AMR,AGV,RGV,ASRS,WMS,WCS,SCADA,VFD,BOM,ISO,PDF,CAD",
+            "log_ip": "1", "log_device": "1", "log_access": "1", "log_retention": "0"}
+NUMERIC_FEATURES = {"notif_retention", "log_retention"}
+TEXT_FEATURES = {"ud_default_version", "name_format", "name_acronyms"}
+
+
+def feat(k):
+    v = S.get(k)
+    if v == "-":                      # the admin cleared the text on purpose
+        return ""
+    return v if v != "" else FEATURES[k]
+
+
+def on(k):
+    return feat(k) == "1"
+
+
+def features_payload():
+    return {k: feat(k) for k in FEATURES}
+
+
+def acronyms():
+    return [a.strip() for a in feat("name_acronyms").split(",") if a.strip()]
+
+
+def device_of(ua):
+    """'Chrome on Windows' from a browser identification string"""
+    ua = ua or ""
+    if not ua:
+        return ""
+    b = "Edge" if "Edg/" in ua else "Opera" if "OPR/" in ua else "Chrome" if ("Chrome/" in ua or "CriOS" in ua) else "Firefox" if "Firefox/" in ua else "Safari" if "Safari/" in ua else "Browser"
+    o = "Windows" if "Windows" in ua else "Android" if "Android" in ua else "iPhone / iPad" if ("iPhone" in ua or "iPad" in ua) else "Mac" if "Macintosh" in ua else "Linux" if "Linux" in ua else ""
+    return f"{b} on {o}" if o else b
 
 
 def is_viewer(u):
@@ -188,13 +237,73 @@ def type_table():
 
 def me_payload(u):
     return {"user": core.user_dict(u), "prefs": core.prefs_of(u["id"]), "brand": brand(), "version": core.VERSION, "types": type_table(),
-            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "roles": list(ROLES), "idle_minutes": float(S.get("idle_minutes") or 60), "statuses": core.STATUSES,
+            "must_change": bool(is_admin(u) and core.checkpw("admin123", u["pw"])), "needs_question": not u["question"], "exact_ok": os.name == "nt", "roles": list(ROLES), "idle_minutes": float(S.get("idle_minutes") or 60), "features": features_payload(), "statuses": core.STATUSES,
             "status_colors": core.STATUS_COLORS, "chips": list(core.TYPE_CHIPS), "orders": {k: list(v) for k, v in core.ORDERS.items()}, "questions": core.QUESTIONS}
 
 
 def needs_approval(u):
     """uploads by normal users wait for an administrator (can be switched off in Admin > Rules)"""
     return u["role"] == "user" and S.get("upload_approval") != "0"
+
+
+def notify(kind, u, doc=None, cat=None, title="", detail=""):
+    """Tell everybody what was added (shown as a popup and in the bell list). Pending uploads are NOT announced until they are approved."""
+    if on("notif_enabled"):
+        core.add_event(kind, u, doc, cat, title, detail)
+
+
+def ensure_cat(parent, name, u):
+    """find or create a folder; a NEW folder is announced"""
+    name = (name or "").strip()[:120] or "Folder"
+    found = core.q("select id from categories where parent_id is ? and name=?", (parent, name))
+    if found:
+        return found[0]["id"]
+    cid = core.get_or_make_cat(parent, name)
+    path = "/".join(c["name"] for c in [core.q("select name from categories where id=?", (x,))[0] for x in ([cid] if not parent else [parent, cid])])
+    notify("folder_created", u, None, cid, name, f"inside {path.rsplit('/', 1)[0]}" if parent else "top level")
+    core.log(u["username"], "add folder (web)", name, ref=None)
+    return cid
+
+
+def allowed_kinds(u):
+    if not on("notif_enabled") or not on(f"notif_role_{u['role']}"):
+        return []
+    return [k for k, f in (("doc_added", "notif_docs"), ("folder_created", "notif_folders"), ("doc_version", "notif_versions")) if on(f)]
+
+
+def apply_upload_meta(did, u, m):
+    """details typed in the Add window: version label, description, tags, status, review date, first comment (only the parts the admin switched on)"""
+    sets, vals = [], []
+    if on("ud_enabled"):
+        if on("ud_version") and m.get("version"):
+            sets.append("vlabel=?"); vals.append(m["version"][:40])
+        if on("ud_desc") and m.get("descr"):
+            sets.append("descr=?"); vals.append(m["descr"][:2000])
+        if on("ud_tags") and m.get("tags"):
+            sets.append("tags=?"); vals.append(m["tags"][:300])
+        if on("ud_status") and m.get("status") in core.STATUSES[1:]:
+            sets.append("status=?"); vals.append(m["status"])
+        if on("ud_review") and m.get("review") and core.valid_date(m["review"]):
+            sets.append("review=?"); vals.append(m["review"])
+    if sets:
+        core.ex(f"update docs set {', '.join(sets)} where id=?", (*vals, did))
+    if on("ud_enabled") and on("ud_comment") and (m.get("comment") or "").strip():
+        core.add_comment(did, u["id"], m["comment"])
+
+
+def check_upload_meta(m):
+    if on("ud_enabled"):
+        if on("ud_req_version") and on("ud_version") and not (m.get("version") or "").strip():
+            raise ApiError("Please type the version.")
+        if on("ud_req_desc") and on("ud_desc") and not (m.get("descr") or "").strip():
+            raise ApiError("Please type a short description.")
+        if m.get("review") and not core.valid_date(m["review"]):
+            raise ApiError("The review date must look like 2026-12-31.")
+
+
+def final_title(raw_title, filename):
+    base = (raw_title or "").strip() or Path(filename).stem
+    return core.format_title(base, feat("name_format"), acronyms()) or None
 
 
 def get_doc_or_404(did, u, allow_deleted=False):
@@ -290,6 +399,11 @@ def create_app():
             return request.is_secure          # https (tunnel) -> Secure cookie; plain http inside the office -> normal cookie
     app.session_interface = DynamicSession()
 
+    @app.before_request
+    def audit_context():
+        """Every log line remembers who did it (id), from which address, with which device and in which session."""
+        core.set_ctx(session.get("uid"), client_ip() if on("log_ip") else "", request.headers.get("User-Agent", "") if on("log_device") else "", session.get("sid", ""))
+
     @app.after_request
     def headers(r):
         r.headers["X-Content-Type-Options"] = "nosniff"
@@ -382,7 +496,11 @@ def create_app():
             raise ApiError("Administrators sign in on the Administrator tab.", 403)
         session.clear()
         session["uid"] = u["id"]
+        session["sid"] = secrets.token_hex(16)
         session.permanent = True
+        ua = request.headers.get("User-Agent", "")
+        core.session_start(session["sid"], u, ip if on("log_ip") else "", ua if on("log_device") else "")
+        core.set_ctx(u["id"], ip if on("log_ip") else "", ua if on("log_device") else "", session["sid"])
         core.log(u["username"], "login (web)", ip)
         return jsonify(me_payload(u))
 
@@ -392,6 +510,8 @@ def create_app():
         u = current_user()
         if u:
             core.log(u["username"], "logout (web)")
+        if session.get("sid"):
+            core.session_end(session["sid"])
         session.clear()
         return jsonify({"ok": True})
 
@@ -659,6 +779,7 @@ def create_app():
         if core.q("select 1 from categories where parent_id is ? and lower(name)=?", (parent, name.lower())):
             raise ApiError("A folder with that name already exists here.")
         i = core.ex("insert into categories(name,parent_id,sort) values(?,?,(select coalesce(max(sort),0)+1 from categories where parent_id is ?))", (name, parent, parent))[0]
+        notify("folder_created", u, None, i, name, "inside " + core.q("select name from categories where id=?", (parent,))[0]["name"] if parent else "top level")
         core.log(u["username"], "add folder (web)", name)
         return jsonify({"id": i})
 
@@ -755,7 +876,7 @@ def create_app():
         err = core.rename_doc(d, title)
         if err:
             raise ApiError(err)
-        core.ex("update docs set tags=?, descr=?, status=?, review=? where id=?", (str(data.get("tags", d["tags"] or ""))[:300], str(data.get("descr", d["descr"] or ""))[:2000], status, review, did))
+        core.ex("update docs set tags=?, descr=?, status=?, review=?, vlabel=? where id=?", (str(data.get("tags", d["tags"] or ""))[:300], str(data.get("descr", d["descr"] or ""))[:2000], status, review, str(data.get("vlabel", d["vlabel"] or ""))[:40], did))
         core.log(u["username"], "edit details (web)", title)
         return jsonify({"doc": fav_aware(did, u)})
 
@@ -820,7 +941,15 @@ def create_app():
     @app.post("/api/approvals/approve")
     @api(admin=True)
     def approvals_approve(u):
-        n = core.approve_docs(ids_of(body()), u["id"])
+        ids = ids_of(body())
+        waiting = [core.get_doc(i) for i in ids]
+        waiting = [d for d in waiting if d and (d["deleted"] or 0) in (2, 3)]
+        n = core.approve_docs(ids, u["id"])
+        for d in waiting:
+            up = core.q("select * from users where id=?", (d["uploader_id"],))
+            if up:
+                notify("doc_added", up[0], d["id"], d["category_id"], d["title"], d["filename"] + f"  (approved by {u['name']})")
+            core.log(u["username"], "approve upload (web)", d["stored"], ref=d["id"])
         core.log(u["username"], "approve upload (web)", f"{n} document(s)")
         return jsonify({"done": n})
 
@@ -846,7 +975,7 @@ def create_app():
         if not text:
             raise ApiError("Write something first.")
         core.add_comment(did, u["id"], text)
-        core.log(u["username"], "comment (web)", core.get_doc(did)["stored"])
+        core.log(u["username"], "comment (web)", core.get_doc(did)["stored"], ref=did)
         return jsonify({"ok": True})
 
     @app.delete("/api/comments/<int:cid>")
@@ -939,6 +1068,9 @@ def create_app():
         pend = needs_approval(u)
         p = core.add_link(cat, name, url, u["id"], pending=pend)
         core.log(u["username"], "add link (web)" + (" - waiting for approval" if pend else ""), name)
+        if not pend:
+            r_ = core.q("select id from docs where stored=? order by id desc limit 1", (str(p.relative_to(core.FILES)),))
+            notify("doc_added", u, r_[0]["id"] if r_ else None, cat, name, "web link")
         return jsonify({"ok": True, "file": p.name, "pending": bool(pend)})
 
     # ------------------------------------------------------------------ upload and versions
@@ -957,18 +1089,26 @@ def create_app():
         cat = int(request.form.get("cat") or 0)
         need_cat(cat)
         rel = [p for p in str(request.form.get("relpath", "")).replace("\\", "/").split("/")[:-1] if p and p not in (".", "..")]
+        meta = {k: str(request.form.get(k, "")).strip() for k in ("version", "descr", "tags", "status", "review", "comment")}
+        check_upload_meta(meta)
         for part in rel[:12]:
-            cat = core.get_or_make_cat(cat, part[:120])
+            cat = ensure_cat(cat, part, u)
         pend = needs_approval(u)
         if pend and request.form.get("mode") == "version":
             raise ApiError("New versions of a document must be uploaded by an administrator. Upload it as a new document instead.", 403)
         try:
-            did, how = core.add_stream(cat, f.filename, f.stream, u["id"], request.form.get("title") or None, request.form.get("mode") or None, max_bytes(), str(request.form.get("note", ""))[:200], pending=pend)
+            did, how = core.add_stream(cat, f.filename, f.stream, u["id"], final_title(request.form.get("title"), f.filename), request.form.get("mode") or None, max_bytes(), str(request.form.get("note", ""))[:200], pending=pend)
         except core.NameConflict as e:
             return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
         except ValueError as e:
             raise ApiError(str(e), 413)
-        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), f.filename)
+        if how == "added":
+            apply_upload_meta(did, u, meta)
+        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), f.filename, ref=did)
+        if how == "added" and not pend:
+            notify("doc_added", u, did, cat, core.get_doc(did)["title"], f.filename)
+        elif how == "version":
+            notify("doc_version", u, did, cat, core.get_doc(did)["title"], "new version")
         return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added"), "duplicate_of": core.find_duplicate_of(did) if how == "added" else None})
 
     UID_RE = re.compile(r"^[a-f0-9]{16,40}$")
@@ -1036,9 +1176,11 @@ def create_app():
         if total < 1 or not dirp.exists() or not all(p.exists() for p in parts):
             raise ApiError("Some pieces did not arrive. Please upload the file again.", 400)
         need_cat(cat)
+        meta = {k: str(d.get(k, "")).strip() for k in ("version", "descr", "tags", "status", "review", "comment")}
+        check_upload_meta(meta)
         rel = [p for p in str(d.get("relpath", "")).replace("\\", "/").split("/")[:-1] if p and p not in (".", "..")]
         for part in rel[:12]:
-            cat = core.get_or_make_cat(cat, part[:120])
+            cat = ensure_cat(cat, part, u)
         name = str(d.get("filename", "")).strip() or "file"
         rd = ChainReader(parts)
         keep = False
@@ -1046,7 +1188,7 @@ def create_app():
         if pend and d.get("mode") == "version":
             raise ApiError("New versions of a document must be uploaded by an administrator. Upload it as a new document instead.", 403)
         try:
-            did, how = core.add_stream(cat, name, rd, u["id"], d.get("title") or None, d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200], pending=pend)
+            did, how = core.add_stream(cat, name, rd, u["id"], final_title(d.get("title"), name), d.get("mode") or None, max_bytes(), str(d.get("note", ""))[:200], pending=pend)
         except core.NameConflict as e:
             keep = True
             return jsonify({"conflict": dd(core.get_doc(e.doc["id"]), u)}), 409
@@ -1056,7 +1198,13 @@ def create_app():
             rd.close()
             if not keep:
                 shutil.rmtree(dirp, ignore_errors=True)
-        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), name)
+        if how == "added":
+            apply_upload_meta(did, u, meta)
+        core.log(u["username"], f"upload {how} (web)" + (" - waiting for approval" if pend and how == "added" else ""), name, ref=did)
+        if how == "added" and not pend:
+            notify("doc_added", u, did, cat, core.get_doc(did)["title"], name)
+        elif how == "version":
+            notify("doc_version", u, did, cat, core.get_doc(did)["title"], "new version")
         return jsonify({"id": did, "how": how, "cat_id": cat, "pending": bool(pend and how == "added"), "duplicate_of": core.find_duplicate_of(did) if how == "added" else None})
 
     @app.post("/api/docs/<int:did>/version")
@@ -1075,7 +1223,8 @@ def create_app():
             core.add_stream(d["category_id"], d["filename"], f.stream, u["id"], None, "version", max_bytes(), str(request.form.get("note", ""))[:200])
         except ValueError as e:
             raise ApiError(str(e), 413)
-        core.log(u["username"], "new version (web)", d["title"])
+        core.log(u["username"], "new version (web)", d["title"], ref=did)
+        notify("doc_version", u, did, d["category_id"], d["title"], "new version")
         return jsonify({"doc": fav_aware(did, u)})
 
     @app.get("/api/docs/<int:did>/versions")
@@ -1112,7 +1261,8 @@ def create_app():
     @api()
     def file_download(u, did):
         d = get_doc_or_404(did, u)
-        core.log(u["username"], "download (web)", d["stored"])
+        if on("log_access"):
+            core.log(u["username"], "download (web)", d["stored"], ref=did)
         return send_doc(d, False)
 
     @app.get("/files/<int:did>/inline")
@@ -1155,7 +1305,8 @@ def create_app():
     @api()
     def doc_opened(u, did):
         d = get_doc_or_404(did, u)
-        core.log(u["username"], "open", d["stored"])
+        if on("log_access"):
+            core.log(u["username"], "open", d["stored"], ref=did)
         return jsonify({"ok": True})
 
     def esc(t):
@@ -1329,12 +1480,42 @@ def create_app():
         return png(img.convert("RGB"))
 
     # ------------------------------------------------------------------ dashboard and live changes
+    def ev_dict(r):
+        return {"id": r["id"], "ts": r["ts"], "kind": r["kind"], "user_id": r["user_id"], "name": r["user_name"], "emp_id": r["emp_id"] or "", "doc_id": r["doc_id"], "cat_id": r["cat_id"], "cat": r["cat_name"] or "", "title": r["title"] or "", "detail": r["detail"] or ""}
+
+    @app.get("/api/notifications")
+    @api()
+    def notifications(u):
+        try:
+            since = int(request.args.get("since", 0))
+        except ValueError:
+            since = 0
+        kinds = allowed_kinds(u)
+        rows = core.events_since(since, kinds, 60) if kinds else []
+        own = on("notif_own")
+        items = [ev_dict(r) for r in rows if own or r["user_id"] != u["id"]]
+        seen = int(core.prefs_of(u["id"]).get("seen_event", 0) or 0)
+        unread = 0
+        if kinds:
+            marks = ",".join("?" * len(kinds))
+            unread = core.q(f"select count(*) c from events where id>? and kind in ({marks})" + ("" if own else " and user_id!=?"), (seen, *kinds, *(() if own else (u["id"],))))[0]["c"]
+        return jsonify({"events": items, "latest": core.latest_event_id(), "unread": unread, "seen": seen, "popup": on("notif_popup") and bool(kinds)})
+
+    @app.post("/api/notifications/seen")
+    @api()
+    def notifications_seen(u):
+        try:
+            core.set_pref(u["id"], "seen_event", int(body().get("id", 0)))
+        except (TypeError, ValueError):
+            raise ApiError("Bad number.")
+        return jsonify({"ok": True})
+
     @app.get("/api/changes")
     @api()
     def changes(u):
         pc = core.pending_counts(u["id"])
         return jsonify({"docs": list(core.docs_stamp()), "logs": core.logs_stamp(), "pending": core.stats(0)["pending"] if is_admin(u) else 0,
-                        "pending_docs": pc["docs"] if is_admin(u) else 0, "my_pending": pc["mine_pending"], "my_rejected": pc["mine_rejected"]})
+                        "pending_docs": pc["docs"] if is_admin(u) else 0, "my_pending": pc["mine_pending"], "my_rejected": pc["mine_rejected"], "event_id": core.latest_event_id() if allowed_kinds(u) else 0})
 
     def slim(rows, u, extra=None):
         out = []
@@ -1376,12 +1557,12 @@ def create_app():
 
     # ------------------------------------------------------------------ admin
     ADMIN_KEYS = {"app_name", "short_name", "company", "subtitle", "tagline", "brand_red", "brand_blue", "brand_navy", "login_bg", "allow_signup", "require_approval", "email_domain",
-                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role", "upload_approval", "idle_minutes"}
+                  "min_password", "max_mb", "auto_backup", "trash_days", "default_role", "upload_approval", "idle_minutes"} | set(FEATURES)
 
     @app.get("/api/admin/settings")
     @api(admin=True)
     def admin_settings(u):
-        return jsonify({k: S.get(k) for k in sorted(ADMIN_KEYS)})
+        return jsonify({**{k: S.get(k) for k in sorted(ADMIN_KEYS - set(FEATURES))}, **features_payload()})
 
     @app.post("/api/admin/settings")
     @api(admin=True)
@@ -1408,6 +1589,22 @@ def create_app():
                     v = str(max(0.0, min(1440.0, float(v or 60))))
                 except ValueError:
                     raise ApiError("Type the minutes as a number, 0 = never.")
+            if k in FEATURES:
+                if FEATURES[k] in ("0", "1") and k not in NUMERIC_FEATURES and k not in TEXT_FEATURES:
+                    v = "1" if v in ("1", "true", "True", "on") else "0"
+                elif k in NUMERIC_FEATURES:
+                    try:
+                        v = str(max(0, min(3650, int(float(v or 0)))))
+                    except ValueError:
+                        raise ApiError("Type the days as a whole number (0 = keep forever).")
+                elif k == "name_format" and v not in ("title", "upper", "lower", "sentence", "none"):
+                    raise ApiError("Unknown file name style.")
+                elif k == "name_acronyms":
+                    v = ",".join(a.strip().upper() for a in v.split(",") if a.strip())[:400]
+                elif k == "ud_default_version":
+                    v = v[:20]
+                S.set(k, v if v != "" else "0" if k in NUMERIC_FEATURES else "-")
+                continue
             if k == "default_role" and v not in ("user", "viewer"):
                 raise ApiError("New accounts can start as User or Viewer.")
             if k == "email_domain":
@@ -1440,15 +1637,78 @@ def create_app():
         (core.ROOT / "logo.png").unlink(missing_ok=True)
         return jsonify({"ok": True})
 
+    def kind_of(action):
+        a = (action or "").lower()
+        if a.startswith(("login", "logout", "failed login", "failed recovery")):
+            return "login"
+        if a.startswith(("upload", "add link", "new version", "edit text")):
+            return "upload"
+        if a in ("open",) or a.startswith("download") or a.startswith("zip"):
+            return "access"
+        if a.startswith(("delete", "purge", "restore", "empty")):
+            return "delete"
+        if a.startswith(("approve", "reject")):
+            return "approval"
+        if a.startswith(("add folder", "folder", "delete folder")):
+            return "folder"
+        if a.startswith(("user ", "account", "password", "profile", "security")):
+            return "account"
+        if a.startswith("settings"):
+            return "settings"
+        return "other"
+
     @app.get("/api/admin/activity")
     @api(admin=True)
     def admin_activity(u):
+        """The audit trail: who (name + id), what, which document, when (to the second), from which address, with which device, in which session."""
         core.flush()
-        t = request.args.get("q", "").lower()
-        rows = [{"ts": r["ts"], "user": r["user"], "action": r["action"], "detail": r["detail"] or ""} for r in core.q("select * from logs order by id desc limit 3000")]
-        if t:
-            rows = [r for r in rows if t in f"{r['user']} {r['action']} {r['detail']}".lower()]
-        return jsonify({"rows": rows[:1500]})
+        a = request.args
+        t, who, kind = a.get("q", "").lower().strip(), a.get("user", "").strip().lower(), a.get("kind", "all")
+        d_from, d_to = a.get("from", "").strip(), a.get("to", "").strip()
+        sql = ("select l.*, coalesce(u.name,u2.name,l.user) name, coalesce(u.emp_id,u2.emp_id,'') emp_id, d.title doc_title from logs l left join users u on u.id=l.uid left join users u2 on u2.username=l.user "
+               "left join docs d on d.id=l.ref order by l.id desc limit 8000")
+        rows = []
+        for r in core.q(sql):
+            k = kind_of(r["action"])
+            if kind != "all" and k != kind:
+                continue
+            if who and who not in f"{r['user']} {r['name']} {r['emp_id']}".lower():
+                continue
+            if d_from and (r["ts"] or "")[:10] < d_from or d_to and (r["ts"] or "")[:10] > d_to:
+                continue
+            row = {"id": r["id"], "ts": r["ts"], "user": r["user"], "name": r["name"], "emp_id": r["emp_id"], "uid": r["uid"], "action": r["action"], "kind": k, "detail": r["detail"] or "", "ip": r["ip"] or "",
+                   "device": device_of(r["ua"]), "sid": (r["sid"] or "")[:8], "ref": r["ref"], "doc_title": r["doc_title"] or ""}
+            if t and t not in " ".join(str(v) for v in row.values()).lower():
+                continue
+            rows.append(row)
+            if len(rows) >= 2000:
+                break
+        return jsonify({"rows": rows})
+
+    @app.get("/api/admin/sessions")
+    @api(admin=True)
+    def admin_sessions(u):
+        out, now_ = [], dt.datetime.now()
+        for r in core.sessions_list():
+            try:
+                idle = (now_ - dt.datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S")).total_seconds()
+            except (TypeError, ValueError):
+                idle = 1e9
+            live = not r["logout_at"] and not r["revoked"] and idle < 300
+            out.append({"sid": r["sid"], "short": r["sid"][:8], "user_id": r["user_id"], "username": r["username"], "name": r["name"], "emp_id": r["emp_id"], "role": r["role"], "ip": r["ip"] or "", "device": device_of(r["ua"]),
+                        "login_at": r["login_at"], "last_seen": r["last_seen"], "logout_at": r["logout_at"] or "", "revoked": bool(r["revoked"]), "online": live, "current": r["sid"] == session.get("sid")})
+        return jsonify({"sessions": out})
+
+    @app.post("/api/admin/sessions/<sid>/revoke")
+    @api(admin=True)
+    def admin_session_revoke(u, sid):
+        if sid == session.get("sid"):
+            raise ApiError("That is your own session. Use Sign out.")
+        if not core.q("select 1 from sessions where sid=?", (sid,)):
+            raise ApiError("Session not found.", 404)
+        core.session_end(sid, revoked=True)
+        core.log(u["username"], "session ended by admin (web)", sid[:8])
+        return jsonify({"ok": True})
 
     @app.get("/api/admin/backup")
     @api(admin=True)
@@ -1526,6 +1786,13 @@ def flush_loop():
             core.flush()
             if n % 900 == 0:
                 purge_chunks()
+                try:
+                    core.purge_events(int(feat("notif_retention") or 0))
+                    days = int(feat("log_retention") or 0)
+                    if days > 0:
+                        core.ex("delete from logs where ts < ?", ((dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),))
+                except Exception:
+                    pass
         except Exception:
             pass
 

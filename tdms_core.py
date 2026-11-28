@@ -123,8 +123,20 @@ def now():
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def log(user, action, detail=""):
-    _WQ.append(("insert into logs(ts,user,action,detail) values(?,?,?,?)", (now(), user, action, detail)))
+def now_s():
+    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+_CTX = threading.local()          # the web server tells us who is acting (id, address, device, session) for the current request
+
+
+def set_ctx(uid=None, ip="", ua="", sid=""):
+    _CTX.uid, _CTX.ip, _CTX.ua, _CTX.sid = uid, ip or "", (ua or "")[:200], sid or ""
+
+
+def log(user, action, detail="", ref=None):
+    g = _CTX
+    _WQ.append(("insert into logs(ts,user,action,detail,uid,ip,ua,sid,ref) values(?,?,?,?,?,?,?,?,?)", (now_s(), user, action, detail, getattr(g, "uid", None), getattr(g, "ip", ""), getattr(g, "ua", ""), getattr(g, "sid", ""), ref)))
 
 
 # ------------------------------------------------------------------ small helpers
@@ -281,11 +293,16 @@ def init():
     for c_, t_ in (("status", "text"), ("review", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
-    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text"), ("appr_note", "text"), ("appr_by", "integer"), ("appr_at", "text"), ("sha", "text")):
+    for c_, t_ in (("deleted", "integer default 0"), ("deleted_at", "text"), ("deleted_by", "integer"), ("trash", "text"), ("ver", "integer default 1"), ("updated_by", "integer"), ("vnote", "text"), ("appr_note", "text"), ("appr_by", "integer"), ("appr_at", "text"), ("sha", "text"), ("vlabel", "text")):
         if c_ not in cols("docs"):
             ex(f"alter table docs add column {c_} {t_}")
     ex("""create table if not exists versions(id integer primary key, doc_id integer, ver integer, stored text, filename text, size integer, uploader_id integer, created text, note text)""")
     ex("""create table if not exists comments(id integer primary key, doc_id integer, user_id integer, created text, body text)""")
+    ex("""create table if not exists events(id integer primary key, ts text, kind text, user_id integer, user_name text, emp_id text, doc_id integer, cat_id integer, cat_name text, title text, detail text)""")
+    ex("""create table if not exists sessions(sid text primary key, user_id integer, username text, ip text, ua text, login_at text, last_seen text, logout_at text, revoked integer default 0)""")
+    for c_, t_ in (("uid", "integer"), ("ip", "text"), ("ua", "text"), ("sid", "text"), ("ref", "integer")):          # who / from where / which session / which document
+        if c_ not in cols("logs"):
+            ex(f"alter table logs add column {c_} {t_}")
     ex("create index if not exists ix_ver_doc on versions(doc_id)")
     if "color" not in cols("categories"):
         ex("alter table categories add column color text")
@@ -1126,7 +1143,7 @@ def doc_dict(r, uid, admin):
             "cat_id": r["category_id"], "cat": r["cat"] or "", "status": r["status"] or "", "review": r["review"] or "", "tags": r["tags"] or "", "descr": r["descr"] or "",
             "ver": r["ver"] or 1, "fav": bool(r["fav"]), "who": r["who"] or "", "uploader_id": r["uploader_id"], "created": r["created"] or "", "deleted_at": r["deleted_at"] or "",
             "pos": r["pos"], "can_edit": bool(admin or r["uploader_id"] == uid),
-            "appr": {2: "pending", 3: "rejected"}.get(r["deleted"] or 0, ""), "appr_note": r["appr_note"] or ""}
+            "appr": {2: "pending", 3: "rejected"}.get(r["deleted"] or 0, ""), "appr_note": r["appr_note"] or "", "vlabel": r["vlabel"] or ""}
 
 
 def user_dict(u):
@@ -1244,3 +1261,83 @@ def list_comments(did):
 def last_logins():
     flush()
     return {r["user"]: r["m"] for r in q("select user, max(ts) m from logs where action in ('login (web)','login') group by user")}
+
+
+# ------------------------------------------------------------------ "what is new" feed, sessions, file name format
+def format_title(name, mode="title", acronyms=()):
+    """File name style chosen by the admin: title (Wiring Manual V1), upper, lower, sentence, none.  acronyms stay in capitals (PLC, SOP ...)."""
+    s = re.sub(r"\s+", " ", re.sub(r"[_]+", " ", name or "")).strip()
+    if mode == "none" or not s:
+        return (name or "").strip()
+    if mode == "upper":
+        return s.upper()
+    if mode == "lower":
+        return s.lower()
+    acr = {a.strip().upper() for a in acronyms if a and a.strip()}
+
+    def cap(w):
+        i = next((k for k, ch in enumerate(w) if ch.isalpha()), None)
+        return w if i is None else w[:i] + w[i].upper() + w[i + 1:].lower()
+
+    def short_caps(w):
+        letters = [ch for ch in w if ch.isalpha()]
+        return 1 < len(letters) <= 5 and all(ch.isupper() for ch in letters)
+
+    ws = [x for x in s.split(" ") if any(ch.isalpha() for ch in x)]
+    shouting = bool(ws) and sum(1 for x in ws if x.isupper()) * 2 > len(ws)          # mostly capitals: only the listed acronyms stay capital
+
+    def word(w):
+        if re.sub(r"[^A-Za-z0-9/]", "", w).upper() in acr or (short_caps(w) and not shouting):
+            return w.upper()                                  # PLC, SOP, ICD stay as capitals
+        if any(ch.islower() for ch in w[1:]) and any(ch.isupper() for ch in w[1:]):
+            return w                                          # CamelCase stays
+        return cap(w)
+    parts = s.split(" ")
+    if mode == "sentence":
+        return " ".join([word(parts[0])] + [p.upper() if (re.sub(r"[^A-Za-z0-9/]", "", p).upper() in acr or (short_caps(p) and not shouting)) else p.lower() for p in parts[1:]])
+    return " ".join("-".join(word(p) for p in w.split("-")) for w in parts)
+
+
+def add_event(kind, user, doc=None, cat=None, title="", detail=""):
+    """kind: doc_added | doc_version | folder_created. user = a users row. doc / cat = ids."""
+    cat_name = ""
+    if cat:
+        r = q("select name from categories where id=?", (cat,))
+        cat_name = r[0]["name"] if r else ""
+    return ex("insert into events(ts,kind,user_id,user_name,emp_id,doc_id,cat_id,cat_name,title,detail) values(?,?,?,?,?,?,?,?,?,?)",
+              (now_s(), kind, user["id"], user["name"], user["emp_id"] or "", doc, cat, cat_name, (title or "")[:200], (detail or "")[:300]))[0]
+
+
+def events_since(since, kinds, limit=60):
+    marks = ",".join("?" * len(kinds)) if kinds else "''"
+    return q(f"select * from events where id>? and kind in ({marks}) order by id desc limit ?", (since, *kinds, limit))
+
+
+def latest_event_id():
+    return q("select coalesce(max(id),0) m from events")[0]["m"]
+
+
+def purge_events(days):
+    if days and days > 0:
+        ex("delete from events where ts < ?", ((dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),))
+
+
+def session_start(sid, user, ip, ua):
+    ex("insert or replace into sessions(sid,user_id,username,ip,ua,login_at,last_seen,logout_at,revoked) values(?,?,?,?,?,?,?,NULL,0)", (sid, user["id"], user["username"], ip or "", (ua or "")[:200], now_s(), now_s()))
+
+
+def session_touch(sid):
+    ex("update sessions set last_seen=? where sid=? and logout_at is NULL", (now_s(), sid))
+
+
+def session_end(sid, revoked=False):
+    ex("update sessions set logout_at=?, revoked=? where sid=? and logout_at is NULL", (now_s(), 1 if revoked else 0, sid))
+
+
+def session_ok(sid):
+    r = q("select revoked, logout_at from sessions where sid=?", (sid,))
+    return (not r) or (not r[0]["revoked"] and not r[0]["logout_at"])
+
+
+def sessions_list(limit=300):
+    return q("select s.*, coalesce(u.name,s.username) name, coalesce(u.emp_id,'') emp_id, coalesce(u.role,'') role from sessions s left join users u on u.id=s.user_id order by s.login_at desc limit ?", (limit,))

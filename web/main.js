@@ -74,11 +74,11 @@ function recover() {
 
 /* ---------- shell ---------- */
 async function start(me) {
-  S.me = me.user; S.prefs = me.prefs; applyBrand(me.brand); S.types = me.types; S.statuses = me.statuses; S.statusColors = me.status_colors; S.chips = me.chips; S.questions = me.questions; S.exactOk = me.exact_ok; S.mustChange = me.must_change;
+  S.me = me.user; S.prefs = me.prefs; S.features = me.features || {}; S.ev = { items: [], last: 0, unread: 0, popup: true }; applyBrand(me.brand); S.types = me.types; S.statuses = me.statuses; S.statusColors = me.status_colors; S.chips = me.chips; S.questions = me.questions; S.exactOk = me.exact_ok; S.mustChange = me.must_change;
   S.order = S.prefs.order_key || "pos"; S.desc = S.prefs.order_desc === "1"; S.view = "folder"; S.cat = +S.prefs.last_cat || null; S.q = ""; S.sel.clear(); S.tabs = []; S.prev = null; S.countsSeen = false; S.counts = { pending_docs: 0, pending_users: 0, my_pending: 0, my_rejected: 0 };
   const t = S.prefs.theme || localStorage.getItem("tdms_theme") || "light"; applyTheme(t); localStorage.setItem("tdms_theme", t);
   renderShell();
-  clearInterval(S.poll); S.poll = setInterval(poll, 15000); refreshCounts(); startIdleWatch(me.idle_minutes);
+  clearInterval(S.poll); S.poll = setInterval(poll, 15000); refreshCounts(); refreshEvents(true); startIdleWatch(me.idle_minutes);
   if (S.mustChange) setTimeout(mustChangeDialog, 400);
   else if (me.needs_question) setTimeout(() => toast("Tip: set a security question in My profile so you can recover your password.", ""), 1500);
 }
@@ -90,7 +90,7 @@ function renderShell() {
   const prof = h("button", { class: "profile", title: "Account", onclick: e => { e.stopPropagation(); profilePanel(e.currentTarget); } },
     avatar(S.me.id, 34, "&v=" + (S.me.has_photo ? 1 : 0)), h("span", { class: "pt" }, h("span", { class: "nm" }, S.me.name), roleBadge(S.me.role)), svgIcon("down", 14));
   const top = h("div", { class: "top" }, h("img", { class: "logo", src: "/brand/logo.png?" + (S.logoBust || ""), alt: "", onerror: e => e.target.remove() }), h("div", { class: "sep" }), h("div", {}, h("div", { class: "appname" }, b.app_name), h("div", { class: "apptag" }, b.subtitle)),
-    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), S.me.role === "viewer" ? null : h("button", { class: "btn sq ghost bell", title: "Notifications", onclick: e => { e.stopPropagation(); bellPanel(e.currentTarget); } }, svgIcon("bell", 18), (S.bellDot = h("span", { class: "bdot hidden" }))),
+    h("div", { class: "gsearch search wide" }, gs, h("kbd", {}, "/")), h("button", { class: "btn sq ghost bell", title: "Notifications", onclick: e => { e.stopPropagation(); bellPanel(e.currentTarget); } }, svgIcon("bell", 18), (S.bellDot = h("span", { class: "bdot hidden" }))),
     h("button", { class: "btn sq ghost", title: "Dark / light theme", onclick: toggleTheme }, svgIcon(theme() === "dark" ? "sun" : "moon", 18)), prof);
   S.tabBar = h("div", { class: "tabs" }); S.page = h("div", { class: "page" });
   add(app, h("div", { class: "shell" }, top, S.tabBar, S.page));
@@ -158,6 +158,7 @@ async function poll() {
   let c; try { c = await api("/api/changes", { quiet: true }); } catch (e) { return; }
   const s = JSON.stringify([c.docs, c.logs]);
   applyCounts(c, true);
+  if (c.event_id && c.event_id > S.ev.last) refreshEvents(false);
   if (S.lastStamp === undefined) { S.lastStamp = s; return; }
   if (s === S.lastStamp) return;
   S.lastStamp = s;
@@ -196,8 +197,40 @@ function applyCounts(c, notify) {
 async function refreshCounts() { if (!S.me) return; try { applyCounts(await api("/api/changes", { quiet: true }), false); } catch (e) { /* ignore */ } }
 function updateBell() {
   if (!S.bellDot) return;
-  const c = S.counts, n = isAdmin() ? c.pending_docs + c.pending_users : c.my_pending + c.my_rejected;
+  const c = S.counts, tasks = isAdmin() ? c.pending_docs + c.pending_users : c.my_pending + c.my_rejected, n = tasks + (S.ev.unread || 0);
   S.bellDot.textContent = n > 9 ? "9+" : String(n); S.bellDot.classList.toggle("hidden", !n);
+}
+/* ---------- what is new: popups + list ---------- */
+const EV = { doc_added: { icon: "file", color: "#2E6DB4", text: e => `${e.name} added \u201C${e.title}\u201D` }, folder_created: { icon: "folderplus", color: "#D4A017", text: e => `${e.name} created the folder \u201C${e.title}\u201D` },
+  doc_version: { icon: "layers", color: "#0097A7", text: e => `${e.name} uploaded a new version of \u201C${e.title}\u201D` } };
+const evSub = e => [e.kind === "folder_created" ? e.detail : e.cat ? "in " + e.cat : "", e.detail && e.kind !== "folder_created" && /approved by/.test(e.detail) ? e.detail.replace(/^.*?(\(approved by[^)]*\)).*$/, "$1") : ""].filter(Boolean).join("  ");
+const evWho = e => e.emp_id ? `${e.name} (#${e.emp_id})` : e.name;
+async function refreshEvents(initial) {
+  if (!S.me) return;
+  let r; try { r = await api(`/api/notifications?since=${initial ? 0 : S.ev.last}`, { quiet: true }); } catch (e) { return; }
+  S.ev.unread = r.unread; S.ev.popup = r.popup;
+  if (initial) { S.ev.items = r.events; S.ev.last = r.latest; }
+  else if (r.events.length) {
+    S.ev.items = [...r.events, ...S.ev.items].slice(0, 60); S.ev.last = r.latest;
+    if (S.ev.popup) {
+      const fresh = [...r.events].reverse();
+      fresh.slice(0, 3).forEach(e => popup({ icon: (EV[e.kind] || EV.doc_added).icon, color: (EV[e.kind] || EV.doc_added).color, title: (EV[e.kind] || EV.doc_added).text(e), text: [evSub(e), evWho(e)].filter(Boolean).join("   \u00B7   "), time: fmtDateTime(e.ts) + "   \u00B7   " + timeAgo(e.ts), onclick: () => gotoEvent(e) }));
+      if (fresh.length > 3) popup({ icon: "bell", title: `${fresh.length - 3} more new item(s)`, text: "Open the bell to see everything that is new.", onclick: () => { const b = $(".bell"); if (b) b.click(); } });
+    }
+  } else S.ev.last = Math.max(S.ev.last, r.latest);
+  updateBell();
+  if (S.route === "dashboard" && S.renderFeed) S.renderFeed();
+}
+async function markAllRead() { try { await post("/api/notifications/seen", { id: S.ev.last }); S.ev.unread = 0; updateBell(); if (S.renderFeed) S.renderFeed(); } catch (e) { /* ignore */ } }
+function gotoEvent(e) {
+  if (e.kind === "folder_created" && e.cat_id) {
+    if (S.route === "library" && L.root && L.root.isConnected) refreshLibrary().then(() => selectFolder(e.cat_id)); else { S.view = "folder"; S.cat = e.cat_id; S.prefs.last_cat = e.cat_id; clearSearch(); go("library"); }
+  } else if (e.doc_id) openDoc({ id: e.doc_id, title: e.title, type: "file" });
+}
+function feedItem(e, onpick) {
+  const k = EV[e.kind] || EV.doc_added;
+  return h("div", { class: "fi", onclick: () => { onpick && onpick(); gotoEvent(e); } }, h("span", { class: "fi-ic", style: { "--c": k.color } }, svgIcon(k.icon, 17)),
+    h("div", { class: "grow" }, h("div", { class: "fi-t" }, k.text(e)), h("div", { class: "muted small" }, [evSub(e), evWho(e)].filter(Boolean).join("   \u00B7   ")), h("div", { class: "muted small" }, fmtDateTime(e.ts) + "   \u00B7   " + timeAgo(e.ts))));
 }
 function bellPanel(anchor) {
   const c = S.counts, rows = [];
@@ -208,10 +241,13 @@ function bellPanel(anchor) {
     if (c.my_rejected) rows.push(["warn", `${c.my_rejected} of your uploads were rejected`, "See why", showMyUploads]);
     if (c.my_pending) rows.push(["clock", `${c.my_pending} of your uploads are waiting for approval`, "View my uploads", showMyUploads]);
   }
-  popNode(h("div", { class: "notif" }, h("div", { class: "nf-head" }, "Notifications"),
-    rows.length ? rows.map(([ic, t, lab, fn]) => h("div", { class: "nf-it", onclick: () => { closeMenu(); fn(); } }, h("span", { class: "nf-ic" }, svgIcon(ic, 18)), h("div", {}, h("div", {}, t), h("div", { class: "small", style: { color: "var(--blue)" } }, lab + " \u203A")))) :
-      h("div", { class: "nf-empty" }, svgIcon("check", 22), h("div", {}, "You are all caught up."))), anchor, true);
+  const evs = S.ev.items.slice(0, 15);
+  popNode(h("div", { class: "notif" }, h("div", { class: "nf-head" }, h("span", {}, "Notifications"), h("span", { class: "spacer" }), S.ev.unread ? h("button", { class: "btn ghost", style: { height: "28px", fontSize: "12px" }, onclick: e => { e.stopPropagation(); markAllRead(); closeMenu(); } }, "Mark all read") : null),
+    rows.length ? h("div", { class: "nf-sec" }, "WAITING FOR YOU") : null,
+    ...rows.map(([ic, t, lab, fn]) => h("div", { class: "nf-it", onclick: () => { closeMenu(); fn(); } }, h("span", { class: "nf-ic" }, svgIcon(ic, 18)), h("div", {}, h("div", {}, t), h("div", { class: "small", style: { color: "var(--blue)" } }, lab + " \u203A")))),
+    h("div", { class: "nf-sec" }, "WHAT IS NEW"),
+    evs.length ? h("div", { class: "nf-feed" }, ...evs.map(e => feedItem(e, closeMenu))) : h("div", { class: "nf-empty" }, svgIcon("check", 22), h("div", {}, on("notif_enabled") ? "Nothing new yet." : "Notifications are switched off by your admin."))), anchor, true);
+  if (S.ev.unread) markAllRead();
 }
-
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); S.installPrompt = e; });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => { }));

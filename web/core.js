@@ -280,3 +280,53 @@ function apprBadge(d) {
   if (!d.appr) return "";
   return h("span", { class: "badge", style: { "--c": d.appr === "pending" ? "#F28C1E" : "#D32F2F" }, title: d.appr_note || "" }, d.appr === "pending" ? "WAITING" : "REJECTED");
 }
+
+
+/* ================================================================ features, names, times, pop-ups ================================================================ */
+S.features = {}; S.ev = { items: [], last: 0, unread: 0, popup: true };
+const feat = k => (S.features || {})[k];
+const on = k => feat(k) === "1";
+/* same rules as the server: Title Case (acronyms stay capital), UPPER, lower, Sentence, none */
+function formatName(name, mode, acr) {
+  const raw = String(name || "");
+  const s = raw.replace(/_+/g, " ").replace(/\s+/g, " ").trim();
+  if (mode === "none" || !s) return raw.trim();
+  if (mode === "upper") return s.toUpperCase();
+  if (mode === "lower") return s.toLowerCase();
+  const A = new Set((acr || []).map(a => a.trim().toUpperCase()).filter(Boolean));
+  const isL = ch => /\p{L}/u.test(ch), up = ch => ch === ch.toUpperCase() && ch !== ch.toLowerCase(), lo = ch => ch === ch.toLowerCase() && ch !== ch.toUpperCase();
+  const letters = w => [...w].filter(isL), key = w => w.replace(/[^A-Za-z0-9/]/g, "").toUpperCase();
+  const cap = w => { const a = [...w], i = a.findIndex(isL); return i < 0 ? w : a.slice(0, i).join("") + a[i].toUpperCase() + a.slice(i + 1).join("").toLowerCase(); };
+  const shortCaps = w => { const l = letters(w); return l.length > 1 && l.length <= 5 && l.every(up); };
+  const parts = s.split(" "), ws = parts.filter(x => letters(x).length);
+  const shouting = ws.length > 0 && ws.filter(x => letters(x).every(up)).length * 2 > ws.length;
+  const keep = w => A.has(key(w)) || (shortCaps(w) && !shouting);
+  const word = w => { if (keep(w)) return w.toUpperCase(); const t = [...w].slice(1); if (t.some(lo) && t.some(up)) return w; return cap(w); };
+  if (mode === "sentence") return [word(parts[0]), ...parts.slice(1).map(p => keep(p) ? p.toUpperCase() : p.toLowerCase())].join(" ");
+  return parts.map(w => w.split("-").map(word).join("-")).join(" ");
+}
+const namesFormat = name => formatName(name, feat("name_format") || "title", (feat("name_acronyms") || "").split(","));
+function parseTs(s) { const m = /^(\d{4})-(\d\d)-(\d\d)[ T](\d\d):(\d\d)(?::(\d\d))?/.exec(s || ""); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) : null; }
+function timeAgo(s) {
+  const d = parseTs(s); if (!d) return s || "";
+  const sec = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (sec < 45) return "just now"; if (sec < 3600) return Math.round(sec / 60) + " min ago"; if (sec < 86400) return Math.round(sec / 3600) + " h ago"; if (sec < 7 * 86400) return Math.round(sec / 86400) + " d ago";
+  return fmtDate(s);
+}
+function fmtDateTime(s) { const m = /^(.*?)(?::(\d\d))?$/.exec(fmtDate(s) || ""); const d = parseTs(s); return d && /:\d\d:\d\d/.test(s) ? fmtDate(s) + ":" + s.slice(17, 19) : fmtDate(s); }
+/* rich pop-up in the top right corner (what is new) */
+function popup({ icon = "bell", title = "", text = "", time = "", color = "var(--blue)", onclick, ms = 9000 }) {
+  let box = $("#pops"); if (!box) { box = h("div", { id: "pops", class: "pops" }); document.body.appendChild(box); }
+  while (box.children.length >= 4) box.firstChild.remove();
+  let timer; const close = () => { clearTimeout(timer); el.classList.add("out"); setTimeout(() => el.remove(), 220); };
+  const el = h("div", { class: "pop", style: { "--c": color }, onclick: e => { if (e.target.closest(".px")) return; close(); onclick && onclick(); }, onmouseenter: () => clearTimeout(timer), onmouseleave: () => { timer = setTimeout(close, 3000); } },
+    h("div", { class: "pi" }, svgIcon(icon, 20)), h("div", { class: "pb" }, h("div", { class: "pt" }, title), text ? h("div", { class: "ptx" }, text) : null, time ? h("div", { class: "pm" }, time) : null),
+    h("button", { class: "px", title: "Close", onclick: e => { e.stopPropagation(); close(); } }, svgIcon("x", 14)), h("i", { class: "pbar", style: { animationDuration: ms + "ms" } }));
+  box.appendChild(el); timer = setTimeout(close, ms); return el;
+}
+function countUp(el, target, ms = 700) {
+  if (!/^\d+$/.test(String(target)) || +target === 0) { el.textContent = String(target); return; }
+  const t0 = performance.now(), n = +target;
+  const step = t => { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); el.textContent = String(Math.round(n * e)); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
